@@ -1,0 +1,67 @@
+version: "3.9"
+
+services:
+  verify:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    ports:
+      - "8070:8070"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://verify:verify@postgres:5432/webank_verify
+      REDIS_URL: redis://redis:6379/0
+      KYC_API_KEY: dev-secret
+      ADMIN_SECRET: admin-secret-change-me
+      WEBHOOK_URL: http://bff:8080/bff/v1/kyc/webhook
+      WEBHOOK_SECRET: webhook-hmac-secret-change-me
+      GEOIP_DB_PATH: ./data/GeoLite2-Country.mmdb
+      S3_ENDPOINT_URL: http://localstack:4566
+      S3_ACCESS_KEY: test
+      S3_SECRET_KEY: test
+      S3_BUCKET: webank-verify
+      ENVIRONMENT: development
+    volumes:
+      - ./app:/app/app
+      - ./data:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: verify
+      POSTGRES_PASSWORD: verify
+      POSTGRES_DB: webank_verify
+    ports:
+      - "5434:5432"
+    volumes:
+      - verify_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U verify"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  localstack:
+    image: localstack/localstack:3
+    ports:
+      - "4566:4566"
+    environment:
+      SERVICES: s3
+      DEFAULT_REGION: us-east-1
+
+volumes:
+  verify_pgdata:
