@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.coverage
+htmlcov/
+*.log
+
+# Env
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Node / Dashboard
+node_modules/
+dashboard/dist/
+dashboard/.vite/
+
+# Data / models (large files)
+data/*.mmdb
+app/services/.deepface/
+~/.deepface/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Docker
+*.tar
+
+# macOS
+.DS_Store
