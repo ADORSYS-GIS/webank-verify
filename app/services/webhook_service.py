@@ -13,8 +13,13 @@ import httpx
 from app.core.config import settings
 
 
-def _sign_payload(payload: dict, secret: str) -> str:
-    body = json.dumps(payload, separators=(",", ":"), sort_keys=True)
+def _serialize(payload: dict) -> str:
+    """Canonical JSON body. The exact string returned here is BOTH signed and
+    transmitted, so the receiver can verify the HMAC over the raw request body."""
+    return json.dumps(payload, separators=(",", ":"), sort_keys=True)
+
+
+def _sign_body(body: str, secret: str) -> str:
     sig = hmac.new(secret.encode(), body.encode(), hashlib.sha256).hexdigest()
     return f"sha256={sig}"
 
@@ -41,7 +46,8 @@ async def send_webhook(
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "data": payload,
     }
-    signature = _sign_payload(envelope, key)
+    body = _serialize(envelope)
+    signature = _sign_body(body, key)
 
     max_attempts = 3
     backoff_seconds = [1, 5, 15]
@@ -53,7 +59,7 @@ async def send_webhook(
             async with httpx.AsyncClient(timeout=10.0) as client:
                 resp = await client.post(
                     url,
-                    json=envelope,
+                    content=body,
                     headers={
                         "Content-Type": "application/json",
                         "X-Webank-Signature": signature,

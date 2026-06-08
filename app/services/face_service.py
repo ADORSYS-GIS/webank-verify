@@ -3,18 +3,31 @@
 from __future__ import annotations
 
 import base64
-import json
 import tempfile
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 
 SIMILARITY_THRESHOLD = 0.68  # ArcFace cosine distance threshold
 
+# Lazily imported, but exposed at module level so callers don't re-import on
+# every call and tests can patch it.
+DeepFace = None
+
+
+def _load_deepface():
+    global DeepFace
+    if DeepFace is None:
+        from deepface import DeepFace as _DF  # noqa: PLC0415
+
+        DeepFace = _DF
+    return DeepFace
+
 
 @dataclass
 class FaceMatchResult:
-    similarity: float  # 0.0 – 1.0
+    similarity: float  # 0.0 – 100.0 (percent)
     passed: bool
     distance: float
     model: str = "ArcFace"
@@ -31,6 +44,15 @@ def _b64_to_temp_file(b64: str) -> str:
         return f.name
 
 
+def _safe_unlink(path: str | None) -> None:
+    if not path:
+        return
+    try:
+        Path(path).unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 def _b64_to_numpy(b64: str) -> np.ndarray:
     import cv2  # noqa: PLC0415
 
@@ -44,15 +66,17 @@ def _b64_to_numpy(b64: str) -> np.ndarray:
 
 def extract_embedding(img_b64: str) -> list[float] | None:
     """Extract ArcFace embedding from an image. Returns None if no face detected."""
+    path = None
     try:
-        from deepface import DeepFace  # noqa: PLC0415
-
+        df = _load_deepface()
         path = _b64_to_temp_file(img_b64)
-        result = DeepFace.represent(img_path=path, model_name="ArcFace", enforce_detection=True)
+        result = df.represent(img_path=path, model_name="ArcFace", enforce_detection=True)
         if result:
             return result[0]["embedding"]
     except Exception:
         return None
+    finally:
+        _safe_unlink(path)
     return None
 
 
@@ -68,13 +92,14 @@ def _cosine_similarity(a: list[float], b: list[float]) -> float:
 
 def compare_faces(id_img_b64: str, selfie_b64: str) -> FaceMatchResult:
     """Compare face from ID document with selfie. Returns similarity and pass/fail."""
+    id_path = None
+    selfie_path = None
     try:
-        from deepface import DeepFace  # noqa: PLC0415
-
+        df = _load_deepface()
         id_path = _b64_to_temp_file(id_img_b64)
         selfie_path = _b64_to_temp_file(selfie_b64)
 
-        result = DeepFace.verify(
+        result = df.verify(
             img1_path=id_path,
             img2_path=selfie_path,
             model_name="ArcFace",
@@ -91,16 +116,46 @@ def compare_faces(id_img_b64: str, selfie_b64: str) -> FaceMatchResult:
             passed=passed,
             distance=round(distance, 4),
         )
-    except Exception as exc:
-        # Face not detected in one of the images
-        no_face_in_id = "id" in str(exc).lower() or "img1" in str(exc).lower()
+    except Exception:
+        # Comparison failed (e.g. face not detected) — can't confirm either face.
         return FaceMatchResult(
             similarity=0.0,
             passed=False,
             distance=1.0,
-            face_found_in_id=not no_face_in_id,
-            face_found_in_selfie=not (not no_face_in_id),
+            face_found_in_id=False,
+            face_found_in_selfie=False,
         )
+    finally:
+        _safe_unlink(id_path)
+        _safe_unlink(selfie_path)
+
+
+def match_against_embedding(
+    selfie_b64: str, stored_embedding: list[float] | None
+) -> FaceMatchResult | None:
+    """Compare a selfie against a previously stored face embedding.
+
+    Returns None if no face is detected in the selfie or there is no stored
+    embedding to compare against.
+    """
+    if not stored_embedding:
+        return None
+    selfie_emb = extract_embedding(selfie_b64)
+    if not selfie_emb:
+        return FaceMatchResult(
+            similarity=0.0,
+            passed=False,
+            distance=1.0,
+            face_found_in_selfie=False,
+        )
+    cos = _cosine_similarity(selfie_emb, stored_embedding)  # -1..1
+    distance = 1.0 - cos
+    similarity = max(0.0, cos) * 100
+    return FaceMatchResult(
+        similarity=round(similarity, 2),
+        passed=distance <= SIMILARITY_THRESHOLD,
+        distance=round(distance, 4),
+    )
 
 
 def check_duplicate(embedding: list[float], existing_embeddings: list[tuple[str, list[float]]]) -> list[str]:
