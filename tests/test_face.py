@@ -10,6 +10,7 @@ from app.services.face_service import (
     FaceMatchResult,
     _cosine_similarity,
     check_duplicate,
+    match_against_embedding,
 )
 
 
@@ -49,6 +50,36 @@ def test_face_match_result_structure():
     assert result.passed is True
     assert result.model == "ArcFace"
     assert result.threshold_used == SIMILARITY_THRESHOLD
+
+
+def test_match_against_embedding_none_when_no_stored():
+    assert match_against_embedding("anything", None) is None
+    assert match_against_embedding("anything", []) is None
+
+
+@patch("app.services.face_service.extract_embedding")
+def test_match_against_embedding_pass(mock_extract):
+    mock_extract.return_value = [1.0, 0.0, 0.0]
+    result = match_against_embedding("selfie_b64", [1.0, 0.0, 0.0])
+    assert result is not None
+    assert result.passed is True  # identical → cosine distance 0
+    assert result.similarity > 99.0
+
+
+@patch("app.services.face_service.extract_embedding")
+def test_match_against_embedding_fail(mock_extract):
+    mock_extract.return_value = [0.0, 1.0, 0.0]
+    result = match_against_embedding("selfie_b64", [1.0, 0.0, 0.0])
+    assert result is not None
+    assert result.passed is False  # orthogonal → distance 1.0
+
+
+@patch("app.services.face_service.extract_embedding", return_value=None)
+def test_match_against_embedding_no_face(mock_extract):
+    result = match_against_embedding("selfie_b64", [1.0, 0.0, 0.0])
+    assert result is not None
+    assert result.passed is False
+    assert result.face_found_in_selfie is False
 
 
 @patch("app.services.face_service.DeepFace")

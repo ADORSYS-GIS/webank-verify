@@ -25,6 +25,7 @@ class LivenessResult:
     frames_analyzed: int = 0
     passed: bool = False
     per_frame: list[FrameMetrics] = field(default_factory=list)
+    best_frame_index: int = 0  # index (into the submitted frames) of the sharpest face
 
     LIVENESS_THRESHOLD: float = 60.0  # minimum score to pass
 
@@ -147,9 +148,11 @@ def analyze_frames(frames_b64: list[str]) -> LivenessResult:
         return LivenessResult()
 
     decoded = []
-    for b64 in frames_b64:
+    original_indices = []  # map decoded[i] back to its index in frames_b64
+    for orig_idx, b64 in enumerate(frames_b64):
         try:
             decoded.append(_decode_frame(b64))
+            original_indices.append(orig_idx)
         except ValueError:
             continue
 
@@ -196,4 +199,5 @@ def analyze_frames(frames_b64: list[str]) -> LivenessResult:
         frames_analyzed=len(decoded),
         passed=liveness >= LivenessResult.LIVENESS_THRESHOLD,
         per_frame=per_frame,
+        best_frame_index=original_indices[best_frame_idx],
     )

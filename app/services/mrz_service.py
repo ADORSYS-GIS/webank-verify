@@ -9,6 +9,18 @@ from dataclasses import dataclass
 import numpy as np
 
 
+_reader = None  # lazy-loaded, cached across calls
+
+
+def _get_reader():
+    global _reader
+    if _reader is None:
+        from easyocr import Reader  # noqa: PLC0415
+
+        _reader = Reader(["en"], gpu=False)
+    return _reader
+
+
 @dataclass
 class MRZFields:
     document_type: str | None = None
@@ -70,9 +82,7 @@ def _extract_mrz_from_image(img_b64: str) -> str | None:
 
     # Use easyocr on the ROI
     try:
-        from easyocr import Reader  # noqa: PLC0415
-
-        reader = Reader(["en"], gpu=False)
+        reader = _get_reader()
         results = reader.readtext(thresh, detail=0, paragraph=False)
         # MRZ lines are 44 chars each (TD3 passport), uppercase + digits + <
         mrz_pattern = re.compile(r"^[A-Z0-9<]{30,44}$")

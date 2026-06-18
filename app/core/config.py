@@ -1,5 +1,13 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# Secrets that ship with insecure placeholder values — refuse to run with
+# these in any non-development environment.
+_INSECURE_DEFAULTS = {
+    "kyc_api_key": "dev-secret",
+    "admin_secret": "admin-secret-change-me",
+    "webhook_secret": "webhook-hmac-secret-change-me",
+}
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
@@ -35,6 +43,21 @@ class Settings(BaseSettings):
     @property
     def is_dev(self) -> bool:
         return self.environment == "development"
+
+    def validate_secrets(self) -> None:
+        if self.is_dev:
+            return
+        offenders = [
+            name
+            for name, default in _INSECURE_DEFAULTS.items()
+            if getattr(self, name) == default
+        ]
+        if offenders:
+            raise RuntimeError(
+                "Refusing to start in environment="
+                f"{self.environment!r} with default secrets: {', '.join(offenders)}. "
+                "Set them via environment variables."
+            )
 
 
 settings = Settings()

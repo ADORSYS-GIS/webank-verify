@@ -37,12 +37,15 @@ class DocumentFields:
     raw_text: list[str] = field(default_factory=list)
 
 
-# Regex patterns for Cameroonian CNI fields
+# Regex patterns for Cameroonian CNI fields.
+# Name/place capture classes use a literal space (not \s) so a match cannot
+# bleed across newlines into the following field. The birth-place anchor is the
+# accented "À"/"à" only — a bare "A" matches far too much OCR noise.
 _PATTERNS = {
-    "last_name": re.compile(r"(?:NOM|Nom)\s*[:\-]?\s*([A-ZÉÈÊËÀÂÙÛÜÏÎ\-\s]+)", re.IGNORECASE),
-    "first_name": re.compile(r"(?:PRENOM[S]?|Prénom[s]?)\s*[:\-]?\s*([A-ZÉÈÊËÀÂÙÛÜÏÎ\-\s]+)", re.IGNORECASE),
+    "last_name": re.compile(r"(?:NOM|Nom)\s*[:\-]?[ \t]*([A-ZÉÈÊËÀÂÙÛÜÏÎ \-]+)", re.IGNORECASE),
+    "first_name": re.compile(r"(?:PRENOM[S]?|Prénom[s]?)\s*[:\-]?[ \t]*([A-ZÉÈÊËÀÂÙÛÜÏÎ \-]+)", re.IGNORECASE),
     "dob": re.compile(r"(?:NÉ[E]?\s+LE|Né[e]?\s+le)\s*[:\-]?\s*(\d{1,2}[/\-\.]\d{1,2}[/\-\.]\d{2,4})"),
-    "birth_place": re.compile(r"(?:À|A|à)\s*[:\-]?\s*([A-ZÉÈÊËÀÂÙÛÜÏÎ\-\s]+)", re.IGNORECASE),
+    "birth_place": re.compile(r"(?:À|à)\s*[:\-]?[ \t]*([A-ZÉÈÊËÀÂÙÛÜÏÎ \-]+)", re.IGNORECASE),
     "doc_number": re.compile(r"(?:N[°º]|No\.?)\s*[:\-]?\s*([0-9]{6,12})"),
     "expiry": re.compile(r"(?:EXPIRE[S]?\s+LE|Expire\s+le|VALABLE\s+JUSQU|Date\s+d.expiration)\s*[:\-]?\s*(\d{1,2}[/\-\.]\d{1,2}[/\-\.]\d{2,4})", re.IGNORECASE),
 }

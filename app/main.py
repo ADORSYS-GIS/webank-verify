@@ -17,6 +17,7 @@ from app.core.redis import close_redis
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
+    settings.validate_secrets()
     await init_db()
     yield
     # Shutdown
@@ -33,9 +34,10 @@ app = FastAPI(
     redoc_url="/redoc" if settings.is_dev else None,
 )
 
+_dev_origins = ["http://localhost:5173", "http://localhost:8070", "http://127.0.0.1:5173"]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"] if settings.is_dev else ["https://webank.cm"],
+    allow_origins=_dev_origins if settings.is_dev else ["https://webank.cm"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

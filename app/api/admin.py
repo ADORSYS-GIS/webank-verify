@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.auth import require_admin
+from app.core.auth import operator_identity, require_admin
 from app.core.db import get_db
 from app.models.db import Verification, VerificationEvent, WebhookDelivery
 from app.models.request import AdminApproveRequest, AdminRejectRequest
@@ -172,6 +172,7 @@ async def get_verification(
 async def approve_verification(
     verification_id: str,
     body: AdminApproveRequest,
+    operator: str = Depends(operator_identity),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     result = await db.execute(select(Verification).where(Verification.id == verification_id))
@@ -180,14 +181,14 @@ async def approve_verification(
         raise HTTPException(status_code=404, detail="Verification not found")
 
     v.status = "approved"
-    v.reviewer = "operator"
+    v.reviewer = operator
     v.review_notes = body.notes
     v.reviewed_at = datetime.now(timezone.utc)
 
     db.add(VerificationEvent(
         verification_id=verification_id,
         event="operator_approved",
-        payload={"reviewer": "operator", "notes": body.notes},
+        payload={"reviewer": operator, "notes": body.notes},
     ))
     await db.commit()
 
@@ -207,6 +208,7 @@ async def approve_verification(
 async def reject_verification(
     verification_id: str,
     body: AdminRejectRequest,
+    operator: str = Depends(operator_identity),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     result = await db.execute(select(Verification).where(Verification.id == verification_id))
@@ -215,7 +217,7 @@ async def reject_verification(
         raise HTTPException(status_code=404, detail="Verification not found")
 
     v.status = "rejected"
-    v.reviewer = "operator"
+    v.reviewer = operator
     v.review_notes = body.reason
     v.reviewed_at = datetime.now(timezone.utc)
 
@@ -227,7 +229,7 @@ async def reject_verification(
     db.add(VerificationEvent(
         verification_id=verification_id,
         event="operator_rejected",
-        payload={"reason": body.reason, "fraud_flag": body.fraud_flag},
+        payload={"reviewer": operator, "reason": body.reason, "fraud_flag": body.fraud_flag},
     ))
     await db.commit()
 
