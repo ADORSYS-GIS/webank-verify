@@ -18,6 +18,7 @@ from app.services import (
     face_service,
     ip_service,
     liveness_service,
+    person_service,
     risk_service,
     storage_service,
     webhook_service,
@@ -157,9 +158,20 @@ async def verify_liveness(
     # Auto-fire webhook if decision is clear.
     if not risk.requires_manual_review:
         event_type = "kyc.level3.approved" if risk.decision == "approved" else "kyc.level3.rejected"
+        payload = {
+            "user_id": body.user_id,
+            "check_id": check_id,
+            "score": liveness_result.liveness_score,
+        }
+        # Attach the stable identity key from the user's approved document
+        # dossier so downstream dedup works for level3 too (ADR 0005). Omitted
+        # when unknown — consumers must fail closed.
+        person_id = await person_service.resolve_person_id(db, body.user_id)
+        if person_id:
+            payload["person_id"] = person_id
         await webhook_service.send_webhook(
             event_type=event_type,
-            payload={"user_id": body.user_id, "check_id": check_id, "score": liveness_result.liveness_score},
+            payload=payload,
             verification_id=check_id,
             db=db,
         )

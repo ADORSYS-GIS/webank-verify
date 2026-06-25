@@ -38,3 +38,4 @@ app/services/.deepface/
 
 # macOS
 .DS_Store
+.venv/

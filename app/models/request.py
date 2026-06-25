@@ -4,7 +4,7 @@ from pydantic import BaseModel, Field
 class DocumentSubmitRequest(BaseModel):
     user_id: str
     images: list[str] = Field(..., min_length=1, description="Base64-encoded images (front required, back optional)")
-    doc_type: str = Field(..., description="'national_id' or 'passport'")
+    doc_type: str = Field(..., description="'national_id', 'recepisse', or 'passport'")
     client_ip: str | None = None
     user_agent: str | None = None
 

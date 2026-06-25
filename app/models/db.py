@@ -25,6 +25,11 @@ class Verification(Base):
     status: Mapped[str] = mapped_column(String, nullable=False, default="pending")
     doc_type: Mapped[str | None] = mapped_column(String, nullable=True)
     country: Mapped[str] = mapped_column(String, default="CM")
+    # Stable biometric identity key (ADR 0005). Assigned on document approval by
+    # clustering the face embedding against already-approved identities; reused
+    # across a person's accounts/documents so downstream consumers can dedup on
+    # UNIQUE(person_id). Null until approved (or when no face was extracted).
+    person_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     document_fields: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     liveness_metrics: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     face_match: Mapped[dict | None] = mapped_column(JSONB, nullable=True)

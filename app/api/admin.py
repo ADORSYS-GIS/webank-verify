@@ -19,7 +19,7 @@ from app.models.response import (
     VerificationListResponse,
     WebhookDelivery as WebhookDeliveryResponse,
 )
-from app.services import storage_service, webhook_service
+from app.services import person_service, storage_service, webhook_service
 
 router = APIRouter(prefix="/admin", dependencies=[Depends(require_admin)])
 
@@ -108,6 +108,7 @@ def _to_detail(v: Verification) -> VerificationDetail:
         status=v.status,
         doc_type=v.doc_type,
         country=v.country,
+        person_id=v.person_id,
         risk_score=v.risk_score,
         warnings=warnings,
         document=doc,
@@ -185,23 +186,35 @@ async def approve_verification(
     v.review_notes = body.notes
     v.reviewed_at = datetime.now(timezone.utc)
 
+    # Assign a stable biometric person_id now that this document identity is
+    # part of the approved set (ADR 0005). Stays None when no face was extracted.
+    if v.type == "document":
+        v.person_id = await person_service.assign_person_id(db, v)
+
     db.add(VerificationEvent(
         verification_id=verification_id,
         event="operator_approved",
-        payload={"reviewer": operator, "notes": body.notes},
+        payload={"reviewer": operator, "notes": body.notes, "person_id": v.person_id},
     ))
     await db.commit()
 
     # Determine correct webhook event based on verification type
     event_type = "kyc.level2.approved" if v.type == "document" else "kyc.level3.approved"
+    payload = {"user_id": v.user_id, "verification_id": verification_id}
+    # Attach the stable identity key for downstream dedup. For non-document
+    # approvals (level3) resolve it from the user's approved document dossier.
+    # Omitted when unknown — consumers must fail closed (ADR 0005).
+    person_id = v.person_id or await person_service.resolve_person_id(db, v.user_id)
+    if person_id:
+        payload["person_id"] = person_id
     await webhook_service.send_webhook(
         event_type=event_type,
-        payload={"user_id": v.user_id, "verification_id": verification_id},
+        payload=payload,
         verification_id=verification_id,
         db=db,
     )
 
-    return {"status": "approved", "verification_id": verification_id}
+    return {"status": "approved", "verification_id": verification_id, "person_id": v.person_id}
 
 
 @router.post("/verifications/{verification_id}/reject")
