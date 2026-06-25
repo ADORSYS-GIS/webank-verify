@@ -38,6 +38,12 @@ class DossierResponse(BaseModel):
     rejection_message: str | None = None
 
 
+class IdentityResponse(BaseModel):
+    user_id: str
+    person_id: str | None = None  # stable biometric key (ADR 0005); null if unknown
+    kyc_level2_approved: bool = False
+
+
 class ProfessionalDossierResponse(BaseModel):
     user_id: str
     professional_type: str
@@ -75,6 +81,7 @@ class LivenessMetrics(BaseModel):
 class FaceMatchResult(BaseModel):
     similarity: float
     passed: bool
+    distance: float = 1.0
     threshold_used: float = 0.68
     model: str = "ArcFace"
 
@@ -111,6 +118,7 @@ class VerificationDetail(BaseModel):
     status: str
     doc_type: str | None = None
     country: str = "CM"
+    person_id: str | None = None
     risk_score: int | None = None
     warnings: list[Warning] = []
     document: DocumentFields | None = None

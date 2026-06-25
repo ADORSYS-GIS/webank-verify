@@ -41,3 +41,4 @@ wheels/*.whl
 
 # macOS
 .DS_Store
+.venv/

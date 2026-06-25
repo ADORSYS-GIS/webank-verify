@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import tempfile
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -169,3 +170,31 @@ def check_duplicate(embedding: list[float], existing_embeddings: list[tuple[str,
         if sim >= 1.0 - SIMILARITY_THRESHOLD:
             duplicates.append(user_id)
     return duplicates
+
+
+def match_or_mint_person_id(
+    embedding: list[float],
+    existing_people: list[tuple[str, list[float]]],
+) -> tuple[str, bool]:
+    """Resolve a stable biometric ``person_id`` for a face embedding (ADR 0005).
+
+    Compares ``embedding`` against the representative embedding of every known
+    person (``existing_people`` = list of ``(person_id, embedding)``) and returns
+    the ``person_id`` of the closest match above the ArcFace threshold — i.e. the
+    same real person reuses the same key across accounts and document types.
+    When nothing matches, a fresh ``person_id`` is minted.
+
+    Returns ``(person_id, matched)`` where ``matched`` is True when an existing
+    person was reused. The caller is responsible for never calling this without a
+    real face embedding (no face → no person_id → fail closed).
+    """
+    best_pid: str | None = None
+    best_sim = -1.0
+    for person_id, stored_emb in existing_people:
+        sim = _cosine_similarity(embedding, stored_emb)
+        if sim >= 1.0 - SIMILARITY_THRESHOLD and sim > best_sim:
+            best_sim = sim
+            best_pid = person_id
+    if best_pid is not None:
+        return best_pid, True
+    return str(uuid.uuid4()), False

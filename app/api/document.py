@@ -26,6 +26,10 @@ from app.services.ocr_service import DocumentFields, _compute_age, _parse_date
 
 router = APIRouter()
 
+# Maps the BFF's ``doc_type`` input to the stored canonical type. Passport is the
+# only MRZ-bearing type; CNI and récépissé share the French OCR pipeline.
+_DOC_TYPE_MAP = {"passport": "PASSPORT", "recepisse": "RECEPISSE"}
+
 
 def _mrz_to_fields(mrz: mrz_service.MRZFields, doc_type: str) -> DocumentFields:
     """Map parsed MRZ fields onto the common DocumentFields shape."""
@@ -89,7 +93,10 @@ async def submit_document(
     client_ip = body.client_ip or (request.client.host if request.client else None)
     user_agent = body.user_agent or request.headers.get("user-agent")
 
-    doc_type = "PASSPORT" if body.doc_type == "passport" else "CNI"
+    # Récépissé is OCR'd via the same French CNI pipeline; identity continuity
+    # across récépissé→CNI is handled by the biometric person_id, not doc_type
+    # (ADR 0005 / 0007). Anything unrecognized falls back to CNI.
+    doc_type = _DOC_TYPE_MAP.get(body.doc_type, "CNI")
 
     # Heavy OCR/face/upload work, off the event loop.
     doc_fields, embedding, img_keys = await run_in_threadpool(
