@@ -36,5 +36,8 @@ app/services/.deepface/
 # Docker
 *.tar
 
+# Pre-downloaded pip wheels (large binary files, not for git)
+wheels/*.whl
+
 # macOS
 .DS_Store

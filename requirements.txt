@@ -10,8 +10,7 @@ opencv-python-headless>=4.9.0
 Pillow>=10.3.0
 numpy>=1.26.0
 
-# MRZ parsing
-python-mrz>=0.2.1
+# MRZ parsing (custom implementation using easyocr + regex — no external MRZ library needed)
 
 # IP intelligence
 geoip2>=4.8.0

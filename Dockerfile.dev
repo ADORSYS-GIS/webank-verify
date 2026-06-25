@@ -2,10 +2,26 @@ FROM python:3.12-slim
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libgl1-mesa-glx libglib2.0-0 libgomp1 \
+    libgl1 libglib2.0-0 libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
+
+# Stage 1: Install CPU-only PyTorch (much smaller, ~200MB vs ~800MB)
+RUN pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cpu
+
+# Stage 2: Install TensorFlow
+# Option A (fast, no network): Pre-download the wheel, put it in ./wheels/, build with --build-arg USE_LOCAL_TENSORFLOW=true
+# Option B (default): Download from PyPI during build
+ARG USE_LOCAL_TENSORFLOW=false
+COPY wheels/ /tmp/wheels/
+RUN if [ "$USE_LOCAL_TENSORFLOW" = "true" ] && ls /tmp/wheels/tensorflow*.whl 1>/dev/null 2>&1; then \
+        pip install --no-cache-dir /tmp/wheels/tensorflow*.whl; \
+    else \
+        pip install --no-cache-dir tensorflow; \
+    fi
+
+# Stage 3: Install all remaining dependencies
 RUN pip install --no-cache-dir -r requirements.txt watchfiles
 
 COPY . .
