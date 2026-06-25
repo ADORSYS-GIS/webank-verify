@@ -81,6 +81,7 @@ class LivenessMetrics(BaseModel):
 class FaceMatchResult(BaseModel):
     similarity: float
     passed: bool
+    distance: float = 1.0
     threshold_used: float = 0.68
     model: str = "ArcFace"
 

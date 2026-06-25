@@ -13,11 +13,16 @@ See webank-context ADR 0005 and webank-verify#2.
 
 from __future__ import annotations
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.db import Verification
 from app.services import face_service
+
+# Transaction-scoped advisory-lock key that serializes person_id assignment so
+# two concurrent approvals of the same real person can't mint divergent keys.
+# Arbitrary constant; only its uniqueness vs other advisory locks matters.
+_PERSON_ID_LOCK_KEY = 905_829_001
 
 
 async def assign_person_id(db: AsyncSession, verification: Verification) -> str | None:
@@ -35,6 +40,18 @@ async def assign_person_id(db: AsyncSession, verification: Verification) -> str 
     embedding = verification.face_embedding
     if not embedding:
         return None
+
+    # Serialize assignment across concurrent approvals (released on commit), so
+    # two approvals of the same real person can't race to two different keys.
+    # Operator approvals are low-volume, so a single global lock is cheap.
+    await db.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": _PERSON_ID_LOCK_KEY})
+
+    # A person's own prior approved identity always wins — keeps person_id stable
+    # across that user's re-verifications (e.g. récépissé→CNI) even if the new
+    # photo's embedding is poor.
+    own = await resolve_person_id(db, verification.user_id)
+    if own:
+        return own
 
     stmt = select(Verification.person_id, Verification.face_embedding).where(
         Verification.type == "document",

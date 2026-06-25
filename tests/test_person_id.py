@@ -67,14 +67,15 @@ class _FakeSession:
     def __init__(self, result: _FakeResult):
         self._result = result
 
-    async def execute(self, _stmt):
+    async def execute(self, _stmt, _params=None):
         return self._result
 
 
 class _Verification:
-    def __init__(self, embedding, id="verif-1"):
+    def __init__(self, embedding, id="verif-1", user_id="user-1"):
         self.face_embedding = embedding
         self.id = id
+        self.user_id = user_id
 
 
 @pytest.mark.asyncio
@@ -86,7 +87,16 @@ async def test_assign_person_id_fails_closed_without_face():
 
 
 @pytest.mark.asyncio
+async def test_assign_person_id_reuses_users_own_key():
+    """A user's own prior approved person_id wins before any clustering."""
+    db = _FakeSession(_FakeResult(rows=[("person-A", [1.0, 0.0, 0.0])], scalar="person-OWN"))
+    v = _Verification(embedding=[1.0, 0.0, 0.0])
+    assert await person_service.assign_person_id(db, v) == "person-OWN"
+
+
+@pytest.mark.asyncio
 async def test_assign_person_id_reuses_existing_cluster():
+    # scalar=None → user has no prior key of their own, so cluster matching runs.
     db = _FakeSession(_FakeResult(rows=[("person-A", [1.0, 0.0, 0.0])]))
     v = _Verification(embedding=[1.0, 0.0, 0.0])
     assert await person_service.assign_person_id(db, v) == "person-A"
