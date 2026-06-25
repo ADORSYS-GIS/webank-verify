@@ -21,6 +21,7 @@ services:
     volumes:
       - ./app:/app/app
       - ./data:/app/data
+      - ./dashboard/dist:/app/dashboard/dist
     depends_on:
       postgres:
         condition: service_healthy

@@ -30,18 +30,24 @@ export default function App() {
             )}
           </div>
           {/* Status filter pills */}
-          <div className="flex gap-1.5 flex-wrap">
-            {["", "pending", "manual_review", "approved", "rejected"].map((s) => (
+          <div className="flex gap-1">
+            {[
+              { value: "", label: "All" },
+              { value: "pending", label: "Pending" },
+              { value: "manual_review", label: "Review" },
+              { value: "approved", label: "Approved" },
+              { value: "rejected", label: "Rejected" },
+            ].map(({ value, label }) => (
               <button
-                key={s}
-                onClick={() => setStatusFilter(s)}
-                className={`text-xs px-2 py-0.5 rounded-full border transition-colors ${
-                  statusFilter === s
+                key={value}
+                onClick={() => setStatusFilter(value)}
+                className={`text-xs px-2 py-0.5 rounded-full border transition-colors whitespace-nowrap ${
+                  statusFilter === value
                     ? "bg-brand-600 border-brand-500 text-white"
                     : "border-gray-700 text-gray-400 hover:border-gray-500"
                 }`}
               >
-                {s || "All"}
+                {label}
               </button>
             ))}
           </div>
