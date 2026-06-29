@@ -1,0 +1,60 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# .dockerignore — keep build context small for faster uploads
+# ──────────────────────────────────────────────────────────────────────────────
+
+# Version control
+.git
+.gitignore
+
+# CI / GitHub
+.github
+
+# IDE
+.vscode
+.idea
+*.swp
+
+# Python cache
+__pycache__
+*.py[cod]
+*.pyo
+*.egg-info
+.venv
+venv
+.pytest_cache
+.coverage
+htmlcov
+
+# Node (dashboard is built inside Docker; no need for node_modules in context)
+dashboard/node_modules
+dashboard/.vite
+
+# Environment files (secrets must not be baked into images)
+.env
+.env.*
+!.env.example
+
+# Large local data (downloaded at build time or runtime)
+data/*.mmdb
+app/services/.deepface
+~/.deepface
+
+# Pre-downloaded wheels (large binaries)
+wheels/
+
+# Docker files (no recursive builds)
+Dockerfile.dev
+docker-compose.yml
+docker-compose*.yml
+
+# Documentation
+*.md
+!CLAUDE.md
+
+# Test files
+tests/
+requirements-test.txt
+pytest.ini
+
+# OS files
+.DS_Store

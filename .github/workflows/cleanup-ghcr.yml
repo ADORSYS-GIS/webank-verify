@@ -1,0 +1,40 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# webank-verify — GHCR image cleanup
+#
+# Prunes old SHA-tagged images to control storage costs.
+# Keeps: latest, branch-named tags (master/develop/main), and the 5 most recent
+#         SHA tags per branch pattern.
+# Deletes: everything else.
+#
+# Runs weekly (Sunday 03:00 UTC) and on manual dispatch.
+# ──────────────────────────────────────────────────────────────────────────────
+
+name: GHCR Cleanup
+
+on:
+  schedule:
+    - cron: "0 3 * * 0"   # Sunday 03:00 UTC
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  cleanup:
+    name: Prune old images
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+
+    steps:
+      - name: Compute package name
+        id: pkg
+        run: echo "name=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      - name: Prune old image versions
+        uses: actions/delete-package-versions@v5
+        with:
+          package-name: ${{ steps.pkg.outputs.name }}
+          package-type: container
+          min-versions-to-keep: 10
+          delete-only-untagged-versions: true

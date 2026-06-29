@@ -1,18 +1,36 @@
-name: CI
+# ──────────────────────────────────────────────────────────────────────────────
+# webank-verify — CI + Build & Push to GHCR
+#
+# Cost-optimised design:
+#   1. Test job gates the expensive Docker build — skip build on test failure.
+#   2. PRs validate the build (docker build, no push) — zero storage cost.
+#   3. Docker layer cache via type=gha (free, fast) — ML model layers (~400 MB)
+#      are cached and only rebuilt when requirements.txt changes.
+#   4. Smart tagging: latest only on master/main, branch tags, short SHA.
+#   5. Single workflow = single runner bill per push (no duplicate checkouts).
+# ──────────────────────────────────────────────────────────────────────────────
+
+name: CI & Deploy
 
 on:
   push:
-    branches: [master]
+    branches: [master, develop, main]
   pull_request:
+    branches: [master, develop, main]
+
+env:
+  REGISTRY: ghcr.io
 
 jobs:
+  # ── Fast test gate ──────────────────────────────────────────────────────────
   test:
+    name: Test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: pip
@@ -25,3 +43,56 @@ jobs:
 
       - name: Run tests
         run: pytest -q
+
+  # ── Docker build + push ────────────────────────────────────────────────────
+  build:
+    name: Build & Push
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # GHCR requires lowercase image names
+      - name: Compute image name
+        id: image
+        run: echo "name=${REGISTRY}/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Tag strategy:
+      #   Every push  → <short-sha> (e.g. abc1234)
+      #   Every push  → <branch>    (e.g. master, develop)
+      #   master/main → latest      (the "production" tag)
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.image.outputs.name }}
+          tags: |
+            type=sha,prefix=
+            type=ref,event=branch
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          # Push on merge to branch; validate-only on PRs (no storage cost)
+          push: ${{ github.event_name == 'push' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # Free layer cache — unchanged ML model layers skip rebuild
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
