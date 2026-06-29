@@ -208,7 +208,7 @@ function OverviewTab({ v }: { v: ReturnType<typeof fetchVerification> extends Pr
         <dl className="space-y-2">
           <Field label="Session ID" value={v.id} mono truncate />
           <Field label="Created at" value={new Date(v.created_at).toLocaleString("fr-FR")} />
-          <Field label="Type" value={v.type} />
+          <Field label="Liveness" value={v.liveness ? "✓ Completed" : "✗ Pending"} />
           {v.reviewer && <Field label="Reviewed by" value={v.reviewer} />}
           {v.review_notes && <Field label="Notes" value={v.review_notes} />}
         </dl>

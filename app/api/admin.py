@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import base64
+import uuid
 from datetime import datetime, timezone
+from io import BytesIO
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,6 +23,7 @@ from app.models.response import (
     WebhookDelivery as WebhookDeliveryResponse,
 )
 from app.services import person_service, storage_service, webhook_service
+from app.services.document_service import create_document_verification
 
 router = APIRouter(prefix="/admin", dependencies=[Depends(require_admin)])
 
@@ -198,12 +202,11 @@ async def approve_verification(
     ))
     await db.commit()
 
-    # Determine correct webhook event based on verification type
-    event_type = "kyc.level2.approved" if v.type == "document" else "kyc.level3.approved"
+    # In the 2-level model, all verifications are Level 2 (document + liveness combined)
+    event_type = "kyc.level2.approved"
     payload = {"user_id": v.user_id, "verification_id": verification_id}
-    # Attach the stable identity key for downstream dedup. For non-document
-    # approvals (level3) resolve it from the user's approved document dossier.
-    # Omitted when unknown — consumers must fail closed (ADR 0005).
+    # Attach the stable identity key for downstream dedup (ADR 0005).
+    # Omitted when unknown — consumers must fail closed.
     person_id = v.person_id or await person_service.resolve_person_id(db, v.user_id)
     if person_id:
         payload["person_id"] = person_id
@@ -246,7 +249,7 @@ async def reject_verification(
     ))
     await db.commit()
 
-    event_type = "kyc.level2.rejected" if v.type == "document" else "kyc.level3.rejected"
+    event_type = "kyc.level2.rejected"
     await webhook_service.send_webhook(
         event_type=event_type,
         payload={
@@ -342,3 +345,101 @@ async def get_webhooks(
         )
         for d in deliveries
     ]
+
+
+# Maximum file size for uploads (10MB)
+MAX_UPLOAD_SIZE_BYTES = 10 * 1024 * 1024
+
+# Allowed MIME types for document uploads
+ALLOWED_MIME_TYPES = {"image/jpeg", "image/png", "image/webp"}
+
+
+@router.post("/verifications/create")
+async def create_verification(
+    user_id: str = Form(..., description="User ID for the verification"),
+    document_type: str = Form(..., description="Document type: 'CNI' or 'PASSPORT'"),
+    front_image: UploadFile = File(..., description="Front image of the document"),
+    back_image: UploadFile | None = File(None, description="Back image of the document (optional)"),
+    operator: str = Depends(operator_identity),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Create a verification record from admin-uploaded document images.
+
+    This endpoint is used for the WhatsApp verification path where an admin
+    collects documents via WhatsApp chat and creates the verification manually.
+
+    Security:
+    - Max file size: 10MB per image
+    - Allowed MIME types: image/jpeg, image/png, image/webp
+    - Filename is sanitized (UUID generated, client name ignored)
+    """
+    # Validate document type
+    doc_type_upper = document_type.upper()
+    if doc_type_upper not in ("CNI", "PASSPORT"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid document_type: {document_type}. Must be 'CNI' or 'PASSPORT'",
+        )
+
+    # Validate MIME type for front image
+    if front_image.content_type not in ALLOWED_MIME_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid file type for front_image: {front_image.content_type}. "
+            f"Allowed types: {', '.join(ALLOWED_MIME_TYPES)}",
+        )
+
+    # Read and validate front image
+    front_content = await front_image.read()
+    if len(front_content) > MAX_UPLOAD_SIZE_BYTES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"front_image exceeds maximum size of {MAX_UPLOAD_SIZE_BYTES // (1024 * 1024)}MB",
+        )
+
+    # Convert front image to base64
+    front_b64 = base64.b64encode(front_content).decode("utf-8")
+
+    # Process back image if provided
+    images = [front_b64]
+    if back_image and back_image.filename:
+        # Validate MIME type for back image
+        if back_image.content_type not in ALLOWED_MIME_TYPES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid file type for back_image: {back_image.content_type}. "
+                f"Allowed types: {', '.join(ALLOWED_MIME_TYPES)}",
+            )
+
+        back_content = await back_image.read()
+        if len(back_content) > MAX_UPLOAD_SIZE_BYTES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"back_image exceeds maximum size of {MAX_UPLOAD_SIZE_BYTES // (1024 * 1024)}MB",
+            )
+
+        back_b64 = base64.b64encode(back_content).decode("utf-8")
+        images.append(back_b64)
+
+    # Map document type to the expected input format
+    # The document_service expects 'national_id' for CNI and 'passport' for PASSPORT
+    doc_type_input = "passport" if doc_type_upper == "PASSPORT" else "national_id"
+
+    # Create verification using shared service
+    verification = await create_document_verification(
+        db=db,
+        user_id=user_id,
+        images=images,
+        doc_type_input=doc_type_input,
+        client_ip=None,  # Admin-initiated, no client IP
+        user_agent=f"admin/{operator}",
+    )
+
+    await db.commit()
+
+    return {
+        "verification_id": verification.id,
+        "status": verification.status,
+        "doc_type": verification.doc_type,
+        "user_id": verification.user_id,
+    }

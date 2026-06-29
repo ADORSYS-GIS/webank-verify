@@ -44,15 +44,6 @@ class IdentityResponse(BaseModel):
     kyc_level2_approved: bool = False
 
 
-class ProfessionalDossierResponse(BaseModel):
-    user_id: str
-    professional_type: str
-    status: str  # pending | in_review | approved | rejected | expired
-    submitted_at: str | None = None
-    reviewed_at: str | None = None
-    rejection_reason: str | None = None
-
-
 # ── Extended verification detail (admin dashboard) ───────────────────────────
 
 class DocumentFields(BaseModel):
