@@ -86,6 +86,7 @@ async def create_document_verification(
     client_ip: str | None = None,
     user_agent: str | None = None,
     verification_id: str | None = None,
+    operator: str | None = None,
 ) -> Verification:
     """Create a document verification record with OCR, face extraction, and risk scoring.
 
@@ -99,6 +100,7 @@ async def create_document_verification(
         client_ip: Optional client IP for IP intelligence
         user_agent: Optional user agent string
         verification_id: Optional verification ID (generated if not provided)
+        operator: Optional operator ID if created by an admin
 
     Returns:
         The created Verification record
@@ -208,14 +210,14 @@ async def create_document_verification(
 
     db.add(
         VerificationEvent(
-            id=None,  # Let SQLAlchemy generate UUID
             verification_id=verification_id,
             event="document_submitted",
             payload={
                 "doc_type": doc_type,
                 "ocr_confidence": doc_fields.confidence,
                 "duplicate_user_ids": duplicate_user_ids,
-                "source": "admin_create",  # Track that this was created by admin
+                "source": "admin_create" if operator else "user_submission",
+                "operator": operator,
             },
         )
     )

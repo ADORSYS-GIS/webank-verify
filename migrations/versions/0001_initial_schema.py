@@ -73,7 +73,7 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()")),
     )
 
-    def downgrade() -> None:
+def downgrade() -> None:
     op.drop_table("review_queue")
     op.drop_table("webhook_deliveries")
     op.drop_table("verification_events")

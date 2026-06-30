@@ -353,6 +353,16 @@ MAX_UPLOAD_SIZE_BYTES = 10 * 1024 * 1024
 # Allowed MIME types for document uploads
 ALLOWED_MIME_TYPES = {"image/jpeg", "image/png", "image/webp"}
 
+def _verify_magic_bytes(content: bytes, content_type: str) -> bool:
+    """Verify that file bytes match the claimed content type (OWASP A03)."""
+    if content_type == "image/jpeg" and content.startswith(b"\xFF\xD8\xFF"):
+        return True
+    if content_type == "image/png" and content.startswith(b"\x89PNG\r\n\x1a\n"):
+        return True
+    if content_type == "image/webp" and content.startswith(b"RIFF") and content[8:12] == b"WEBP":
+        return True
+    return False
+
 
 @router.post("/verifications/create")
 async def create_verification(
@@ -396,13 +406,19 @@ async def create_verification(
             status_code=400,
             detail=f"front_image exceeds maximum size of {MAX_UPLOAD_SIZE_BYTES // (1024 * 1024)}MB",
         )
+    if not _verify_magic_bytes(front_content, front_image.content_type):
+        raise HTTPException(
+            status_code=400,
+            detail="front_image content does not match claimed MIME type",
+        )
 
     # Convert front image to base64
     front_b64 = base64.b64encode(front_content).decode("utf-8")
 
     # Process back image if provided
     images = [front_b64]
-    if back_image and back_image.filename:
+    # Check if back_image actually has content
+    if back_image and getattr(back_image, "size", 0) > 0:
         # Validate MIME type for back image
         if back_image.content_type not in ALLOWED_MIME_TYPES:
             raise HTTPException(
@@ -416,6 +432,11 @@ async def create_verification(
             raise HTTPException(
                 status_code=400,
                 detail=f"back_image exceeds maximum size of {MAX_UPLOAD_SIZE_BYTES // (1024 * 1024)}MB",
+            )
+        if not _verify_magic_bytes(back_content, back_image.content_type):
+            raise HTTPException(
+                status_code=400,
+                detail="back_image content does not match claimed MIME type",
             )
 
         back_b64 = base64.b64encode(back_content).decode("utf-8")
@@ -433,6 +454,7 @@ async def create_verification(
         doc_type_input=doc_type_input,
         client_ip=None,  # Admin-initiated, no client IP
         user_agent=f"admin/{operator}",
+        operator=operator,
     )
 
     await db.commit()

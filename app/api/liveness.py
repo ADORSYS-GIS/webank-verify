@@ -187,7 +187,6 @@ async def verify_liveness(
     # Add verification event for liveness check
     db.add(
         VerificationEvent(
-            id=None,  # Let SQLAlchemy generate UUID
             verification_id=doc_verification.id,
             event="liveness_checked",
             payload={
