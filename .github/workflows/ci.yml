@@ -1,13 +1,16 @@
 # ──────────────────────────────────────────────────────────────────────────────
 # webank-verify — CI + Build & Push to GHCR
 #
-# Cost-optimised design:
-#   1. Test job gates the expensive Docker build — skip build on test failure.
-#   2. PRs validate the build (docker build, no push) — zero storage cost.
-#   3. Docker layer cache via type=gha (free, fast) — ML model layers (~400 MB)
+# Cost-optimised design (based on fineract-apps patterns):
+#   1. Concurrency groups — cancel redundant runs on same branch/PR.
+#   2. Path-based triggers — skip CI when only docs/dashboard change.
+#   3. Test job gates the expensive Docker build — skip build on test failure.
+#   4. PRs validate the build (docker build, no push) — zero storage cost.
+#   5. Docker layer cache via type=gha (free, fast) — ML model layers (~400 MB)
 #      are cached and only rebuilt when requirements.txt changes.
-#   4. Smart tagging: latest only on master/main, branch tags, short SHA.
-#   5. Single workflow = single runner bill per push (no duplicate checkouts).
+#   6. Smart tagging: latest only on master/main, branch tags, short SHA.
+#   7. Summary job — always reports status for branch protection checks.
+#   8. Scoped permissions — minimum needed per job.
 # ──────────────────────────────────────────────────────────────────────────────
 
 name: CI & Deploy
@@ -15,8 +18,44 @@ name: CI & Deploy
 on:
   push:
     branches: [master, develop, main]
+    paths:
+      - "app/**"
+      - "migrations/**"
+      - "tests/**"
+      - "requirements.txt"
+      - "requirements-test.txt"
+      - "Dockerfile"
+      - "Dockerfile.dev"
+      - "docker-compose.yml"
+      - ".dockerignore"
+      - "alembic.ini"
+      - "pytest.ini"
+      - "scripts/**"
+      - ".github/workflows/ci.yml"
   pull_request:
     branches: [master, develop, main]
+    paths:
+      - "app/**"
+      - "migrations/**"
+      - "tests/**"
+      - "requirements.txt"
+      - "requirements-test.txt"
+      - "Dockerfile"
+      - "Dockerfile.dev"
+      - "docker-compose.yml"
+      - ".dockerignore"
+      - "alembic.ini"
+      - "pytest.ini"
+      - "scripts/**"
+      - ".github/workflows/ci.yml"
+  workflow_dispatch: # Allow manual triggers
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
 
 env:
   REGISTRY: ghcr.io
@@ -96,3 +135,24 @@ jobs:
           # Free layer cache — unchanged ML model layers skip rebuild
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  # ── Summary job for branch protection ───────────────────────────────────────
+  ci-success:
+    name: CI Success
+    if: always()
+    runs-on: ubuntu-latest
+    needs: [test, build]
+    steps:
+      - name: Check all jobs passed
+        run: |
+          echo "test:  ${{ needs.test.result }}"
+          echo "build: ${{ needs.build.result }}"
+          if [[ "${{ needs.test.result }}" == "failure" || "${{ needs.build.result }}" == "failure" ]]; then
+            echo "::error::CI failed"
+            exit 1
+          fi
+          if [[ "${{ needs.test.result }}" == "cancelled" || "${{ needs.build.result }}" == "cancelled" ]]; then
+            echo "::warning::CI was cancelled"
+            exit 1
+          fi
+          echo "CI passed"
