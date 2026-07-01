@@ -1,0 +1,91 @@
+name: Cleanup Artifacts
+
+on:
+  schedule:
+    # Run daily at 00:30 UTC
+    - cron: "30 0 * * *"
+  workflow_dispatch:
+    inputs:
+      max_age_hours:
+        description: "Delete artifacts older than this many hours (default: 24)"
+        required: false
+        default: "24"
+      dry_run:
+        description: "Dry run (list only, don't delete)"
+        required: false
+        default: "false"
+
+permissions:
+  actions: write
+
+jobs:
+  cleanup:
+    name: Delete Old Artifacts
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Delete old artifacts
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MAX_AGE_HOURS: ${{ github.event.inputs.max_age_hours || '24' }}
+          DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
+        run: |
+          echo "=== Artifact Cleanup ==="
+          echo "Max age: ${MAX_AGE_HOURS} hours"
+          echo "Dry run: ${DRY_RUN}"
+          echo ""
+
+          REPO="${{ github.repository }}"
+          DELETED=0
+          FAILED=0
+          PAGE=1
+
+          while true; do
+            RESPONSE=$(gh api "repos/${REPO}/actions/artifacts?per_page=100&page=${PAGE}" 2>&1) || break
+
+            # Check for rate limit or errors
+            if echo "$RESPONSE" | grep -q "rate limit"; then
+              echo "⚠️ Rate limited. Waiting 60s before retry..."
+              sleep 60
+              continue
+            fi
+
+            TOTAL_COUNT=$(echo "$RESPONSE" | jq '.total_count // 0')
+            ARTIFACTS=$(echo "$RESPONSE" | jq -c '.artifacts // []')
+
+            # No more artifacts
+            if [ "$(echo "$ARTIFACTS" | jq 'length')" -eq 0 ]; then
+              break
+            fi
+
+            CUTOFF_DATE=$(date -d "-${MAX_AGE_HOURS} hours" -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -v-"${MAX_AGE_HOURS}H" -u +%Y-%m-%dT%H:%M:%SZ)
+
+            while IFS=$'\t' read -r ID NAME CREATED SIZE; do
+              if [[ "$CREATED" < "$CUTOFF_DATE" ]]; then
+                SIZE_MB=$(echo "scale=2; $SIZE / 1048576" | bc 2>/dev/null || echo "${SIZE}")
+                if [ "$DRY_RUN" = "true" ]; then
+                  echo "[DRY RUN] Would delete: $NAME (id=$ID, created=$CREATED, size=${SIZE_MB}MB)"
+                else
+                  if gh api --method DELETE "repos/${REPO}/actions/artifacts/${ID}" > /dev/null 2>&1; then
+                    DELETED=$((DELETED + 1))
+                    echo "✅ Deleted: $NAME (id=$ID, created=$CREATED, size=${SIZE_MB}MB)"
+                  else
+                    FAILED=$((FAILED + 1))
+                    echo "❌ Failed: $NAME (id=$ID)"
+                  fi
+                fi
+              else
+                echo "⏭️ Keeping: $NAME (created=$CREATED, within ${MAX_AGE_HOURS}h window)"
+              fi
+            done < <(echo "$ARTIFACTS" | jq -r '.[] | "\(.id)\t\(.name)\t\(.created_at)\t\(.size_in_bytes)"')
+
+            PAGE=$((PAGE + 1))
+
+            # Safety: sleep between pages to avoid rate limits
+            sleep 2
+          done
+
+          echo ""
+          echo "=== Cleanup complete ==="
+          echo "Deleted: ${DELETED}"
+          echo "Failed: ${FAILED}"
