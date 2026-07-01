@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import logging
 import uuid
 from datetime import timedelta
 
@@ -13,10 +14,17 @@ from app.core.config import settings
 
 _client = None
 
+logger = logging.getLogger(__name__)
+
 
 def _get_client():
     global _client
     if _client is None:
+        if not settings.s3_endpoint_url:
+            raise ValueError(
+                "S3_ENDPOINT_URL is not configured. "
+                "Set S3_ENDPOINT_URL (e.g. http://localstack:4566) to enable document storage."
+            )
         _client = boto3.client(
             "s3",
             endpoint_url=settings.s3_endpoint_url,
@@ -29,6 +37,7 @@ def _get_client():
             _client.head_bucket(Bucket=settings.s3_bucket)
         except ClientError:
             _client.create_bucket(Bucket=settings.s3_bucket)
+            logger.info("Created S3 bucket: %s", settings.s3_bucket)
     return _client
 
 

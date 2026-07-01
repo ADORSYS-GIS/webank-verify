@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from prometheus_fastapi_instrumentator import Instrumentator
 
-from app.api import admin, document, dossier, health, identity, liveness, professional, recovery
+from app.api import admin, document, health, identity, liveness
 from app.core.config import settings
 from app.core.db import close_db, init_db
 from app.core.redis import close_redis
@@ -49,10 +49,7 @@ Instrumentator().instrument(app).expose(app, endpoint="/metrics")
 # BFF-facing routes
 app.include_router(document.router, tags=["BFF"])
 app.include_router(liveness.router, tags=["BFF"])
-app.include_router(dossier.router, tags=["BFF"])
 app.include_router(identity.router, tags=["BFF"])
-app.include_router(professional.router, tags=["BFF"])
-app.include_router(recovery.router, tags=["BFF"])
 app.include_router(health.router, tags=["Internal"])
 
 # Admin dashboard API
