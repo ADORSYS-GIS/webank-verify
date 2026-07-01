@@ -39,8 +39,8 @@ data/*.mmdb
 app/services/.deepface
 ~/.deepface
 
-# Pre-downloaded wheels (large binaries)
-wheels/
+# Pre-downloaded wheels — included when USE_LOCAL_TENSORFLOW=true
+# wheels/
 
 # Docker files (no recursive builds)
 Dockerfile.dev
