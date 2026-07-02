@@ -23,9 +23,15 @@ export interface DocumentFields {
   birth_place: string | null;
   document_number: string | null;
   expiry_date: string | null;
+  issue_date: string | null;
   is_expired: boolean;
   age: number | null;
   is_underage: boolean;
+  sex: string | null;
+  height: string | null;
+  profession: string | null;
+  father: string | null;
+  mother: string | null;
   confidence: number;
 }
 

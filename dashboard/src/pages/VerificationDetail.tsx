@@ -123,7 +123,7 @@ export default function VerificationDetail({ id, onClose }: Props) {
       {/* Tab content */}
       <div className="flex-1 overflow-y-auto p-6">
         {activeTab === "Overview" && <OverviewTab v={v} />}
-        {activeTab === "ID Verification" && <IDVerificationTab doc={v.document} />}
+        {activeTab === "ID Verification" && <IDVerificationTab doc={v.document} verificationId={id} />}
         {activeTab === "Liveness" && <LivenessTab verificationId={id} liveness={v.liveness} />}
         {activeTab === "Face Match" && <FaceMatchTab faceMatch={v.face_match} verificationId={id} />}
         {activeTab === "AML Screening" && <AMLTab verification={v} />}

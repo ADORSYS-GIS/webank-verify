@@ -1,6 +1,9 @@
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { ZoomIn } from "lucide-react";
 import { fetchFrames } from "../../lib/api";
 import type { LivenessMetrics } from "../../lib/types";
+import ImageLightbox from "../ImageLightbox";
 
 interface Props {
   verificationId: string;
@@ -25,10 +28,17 @@ function ScoreCard({ label, value, suffix = "%" }: { label: string; value: numbe
 }
 
 export default function LivenessTab({ verificationId, liveness }: Props) {
+  const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
+
   const { data: frameUrls } = useQuery({
     queryKey: ["frames", verificationId],
     queryFn: () => fetchFrames(verificationId),
   });
+
+  const lightboxImages = (frameUrls ?? []).map((url, i) => ({
+    url,
+    label: `Frame ${i + 1}`,
+  }));
 
   return (
     <div className="space-y-6">
@@ -45,20 +55,42 @@ export default function LivenessTab({ verificationId, liveness }: Props) {
       </div>
 
       <div className="flex gap-6">
-        {/* Video / frames preview */}
-        <div className="w-64 flex-shrink-0">
+        {/* Main frame — clickable */}
+        <div className="w-64 shrink-0">
           {frameUrls && frameUrls.length > 0 ? (
             <div className="space-y-2">
-              <img
-                src={frameUrls[0]}
-                alt="Liveness frame"
-                className="w-full rounded-lg border border-gray-700 object-cover"
-              />
+              <button
+                onClick={() => setLightboxIndex(0)}
+                className="relative group w-full rounded-lg overflow-hidden border border-gray-700 hover:border-brand-500 transition-colors focus:outline-none focus:ring-2 focus:ring-brand-500"
+                title="Click to enlarge"
+              >
+                <img
+                  src={frameUrls[0]}
+                  alt="Liveness frame"
+                  className="w-full object-cover group-hover:opacity-80 transition-opacity"
+                />
+                <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity bg-black/30">
+                  <div className="bg-black/60 rounded-full p-2">
+                    <ZoomIn size={20} className="text-white" />
+                  </div>
+                </div>
+              </button>
+              {/* Thumbnail strip */}
               {frameUrls.length > 1 && (
-                <div className="flex gap-1.5">
+                <div className="flex gap-1.5 flex-wrap">
                   {frameUrls.slice(1).map((url, i) => (
-                    <img key={i} src={url} alt={`Frame ${i + 2}`}
-                      className="w-16 h-16 rounded border border-gray-700 object-cover" />
+                    <button
+                      key={i}
+                      onClick={() => setLightboxIndex(i + 1)}
+                      className="relative group rounded border border-gray-700 hover:border-brand-500 overflow-hidden transition-colors focus:outline-none focus:ring-1 focus:ring-brand-500"
+                      title={`Frame ${i + 2} — click to enlarge`}
+                    >
+                      <img src={url} alt={`Frame ${i + 2}`}
+                        className="w-16 h-16 object-cover group-hover:opacity-70 transition-opacity" />
+                      <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 bg-black/30 transition-opacity">
+                        <ZoomIn size={12} className="text-white" />
+                      </div>
+                    </button>
                   ))}
                 </div>
               )}
@@ -79,21 +111,29 @@ export default function LivenessTab({ verificationId, liveness }: Props) {
         </div>
       </div>
 
-      {/* Face matches grid (similar to Didit) */}
+      {/* Face matches grid — all frames clickable */}
       {frameUrls && frameUrls.length > 1 && (
         <div>
-          <p className="text-xs text-gray-400 mb-2 font-medium">Face Matches</p>
-          <div className="flex gap-3">
+          <p className="text-xs text-gray-400 mb-2 font-medium">All Frames</p>
+          <div className="flex gap-3 flex-wrap">
             {frameUrls.map((url, i) => (
-              <div key={i} className="relative">
+              <button
+                key={i}
+                onClick={() => setLightboxIndex(i)}
+                className="relative group focus:outline-none focus:ring-2 focus:ring-brand-500 rounded-lg"
+                title={`Frame ${i + 1} — click to enlarge`}
+              >
                 <img src={url} alt={`Frame ${i + 1}`}
-                  className="w-24 h-28 rounded-lg border border-gray-700 object-cover" />
+                  className="w-24 h-28 rounded-lg border border-gray-700 group-hover:border-brand-500 object-cover transition-colors" />
                 <div className="absolute bottom-1 left-1 right-1 bg-black/60 rounded text-center">
                   <span className="text-xs text-green-300 font-medium">
                     {liveness ? `${(liveness.score - i * 2).toFixed(1)}%` : "—"}
                   </span>
                 </div>
-              </div>
+                <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 bg-black/20 rounded-lg transition-opacity">
+                  <ZoomIn size={16} className="text-white drop-shadow" />
+                </div>
+              </button>
             ))}
           </div>
         </div>
@@ -103,6 +143,15 @@ export default function LivenessTab({ verificationId, liveness }: Props) {
         <div className="text-xs text-gray-500">
           {liveness.frames_analyzed} frame{liveness.frames_analyzed !== 1 ? "s" : ""} analyzed
         </div>
+      )}
+
+      {/* Lightbox */}
+      {lightboxIndex !== null && lightboxImages.length > 0 && (
+        <ImageLightbox
+          images={lightboxImages}
+          initialIndex={lightboxIndex}
+          onClose={() => setLightboxIndex(null)}
+        />
       )}
     </div>
   );

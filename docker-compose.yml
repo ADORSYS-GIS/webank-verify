@@ -14,6 +14,7 @@ services:
       WEBHOOK_SECRET: webhook-hmac-secret-change-me
       GEOIP_DB_PATH: ./data/GeoLite2-Country.mmdb
       S3_ENDPOINT_URL: http://localstack:4566
+      S3_PUBLIC_URL: http://localhost:4566
       S3_ACCESS_KEY: test
       S3_SECRET_KEY: test
       S3_BUCKET: webank-verify

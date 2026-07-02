@@ -54,9 +54,15 @@ class DocumentFields(BaseModel):
     birth_place: str | None = None
     document_number: str | None = None
     expiry_date: str | None = None
+    issue_date: str | None = None
     is_expired: bool = False
     age: int | None = None
     is_underage: bool = False
+    sex: str | None = None
+    height: str | None = None
+    profession: str | None = None
+    father: str | None = None
+    mother: str | None = None
     confidence: float = 0.0
 
 

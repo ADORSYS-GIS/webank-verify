@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from typing import TYPE_CHECKING
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.redis import get_redis
 from app.models.db import ReviewQueue, Verification, VerificationEvent
 from app.services import face_service, ip_service, mrz_service, ocr_service, risk_service, storage_service
 from app.services.ocr_service import DocumentFields, _compute_age, _parse_date
@@ -15,6 +17,11 @@ from app.services.ocr_service import DocumentFields, _compute_age, _parse_date
 if TYPE_CHECKING:
     from app.services.ip_service import IPAnalysisResult
     from app.services.risk_service import RiskResult
+
+# Redis key prefix for the per-user document submission mutex.
+# TTL is 3 minutes — long enough to cover the slowest OCR run (typically 30–60s).
+_DOC_SUBMIT_LOCK_PREFIX = "doc_submit_lock:"
+_DOC_SUBMIT_LOCK_TTL = 180  # seconds
 
 
 # Maps the BFF's ``doc_type`` input to the stored canonical type. Passport is the
@@ -113,6 +120,65 @@ async def create_document_verification(
     # (ADR 0005 / 0007). Anything unrecognized falls back to CNI.
     doc_type = DOC_TYPE_MAP.get(doc_type_input, "CNI")
 
+    # ── Distributed mutex: prevent concurrent duplicate submissions ────────────
+    # The OCR pipeline takes 30–60 s. Without a mutex, two concurrent requests
+    # both pass the "no pending record" check before either commits, producing
+    # two rows. We use a Redis SET NX lock keyed by user_id. The second request
+    # spins for up to _DOC_SUBMIT_LOCK_TTL seconds and then re-checks the DB.
+    #
+    # Admin-created verifications (operator is set) skip the mutex because
+    # operators intentionally create multiple records for the same user over time.
+    redis = get_redis()
+    lock_key = _DOC_SUBMIT_LOCK_PREFIX + user_id
+    acquired = False
+
+    if not operator:
+        # Try to acquire the lock (NX = only set if not exists, EX = TTL in seconds).
+        acquired = await redis.set(lock_key, verification_id, nx=True, ex=_DOC_SUBMIT_LOCK_TTL)
+        if not acquired:
+            # Another request is already processing OCR for this user.
+            # Poll until it finishes (lock released) then return whatever it created.
+            for _ in range(_DOC_SUBMIT_LOCK_TTL * 2):  # poll every 0.5 s
+                await asyncio.sleep(0.5)
+                still_locked = await redis.exists(lock_key)
+                if not still_locked:
+                    break
+            # Lock gone — the first request finished. Return the record it created.
+            existing_stmt = (
+                select(Verification)
+                .where(
+                    Verification.user_id == user_id,
+                    Verification.type == "document",
+                    Verification.status.in_(["pending", "manual_review"]),
+                )
+                .order_by(Verification.created_at.desc())
+                .limit(1)
+            )
+            existing = (await db.execute(existing_stmt)).scalar_one_or_none()
+            if existing is not None:
+                return existing
+            # Fallback: lock expired before we got it — proceed to create a new record.
+
+    # Fast-path check (lock is held by us): still return early if somehow a
+    # pending record already exists (e.g., from an older submission that wasn't
+    # cleaned up, or an admin-created record for the same user).
+    if not operator:
+        existing_stmt = (
+            select(Verification)
+            .where(
+                Verification.user_id == user_id,
+                Verification.type == "document",
+                Verification.status.in_(["pending", "manual_review"]),
+            )
+            .order_by(Verification.created_at.desc())
+            .limit(1)
+        )
+        existing = (await db.execute(existing_stmt)).scalar_one_or_none()
+        if existing is not None:
+            # Release the lock before returning.
+            await redis.delete(lock_key)
+            return existing
+
     # Import here to avoid circular dependency
     from fastapi.concurrency import run_in_threadpool
 
@@ -185,9 +251,15 @@ async def create_document_verification(
             "birth_place": doc_fields.birth_place,
             "document_number": doc_fields.document_number,
             "expiry_date": doc_fields.expiry_date,
+            "issue_date": doc_fields.issue_date,
             "is_expired": doc_fields.is_expired,
             "age": doc_fields.age,
             "is_underage": doc_fields.is_underage,
+            "sex": doc_fields.sex,
+            "height": doc_fields.height,
+            "profession": doc_fields.profession,
+            "father": doc_fields.father,
+            "mother": doc_fields.mother,
             "confidence": doc_fields.confidence,
             "image_keys": img_keys,
         },

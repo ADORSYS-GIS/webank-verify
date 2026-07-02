@@ -7,9 +7,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import require_api_key
 from app.core.db import get_db
+from app.core.redis import get_redis
 from app.models.request import DocumentSubmitRequest
 from app.models.response import DocSubmitResponse
-from app.services.document_service import create_document_verification
+from app.services.document_service import _DOC_SUBMIT_LOCK_PREFIX, create_document_verification
 
 router = APIRouter()
 
@@ -34,5 +35,10 @@ async def submit_document(
     )
 
     await db.commit()
+
+    # Release the per-user mutex AFTER commit so any concurrent retry that
+    # was waiting on the lock will find the committed row in the DB.
+    redis = get_redis()
+    await redis.delete(_DOC_SUBMIT_LOCK_PREFIX + body.user_id)
 
     return DocSubmitResponse(submission_id=verification.id, status="pending")

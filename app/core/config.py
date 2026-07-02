@@ -30,7 +30,12 @@ class Settings(BaseSettings):
     geoip_db_path: str = "./data/GeoLite2-Country.mmdb"
 
     # S3-compatible storage
+    # s3_endpoint_url is used for uploads (server-side, Docker-internal hostname).
+    # s3_public_url is used for presigned URLs returned to the browser; in dev it
+    # must point to a host the browser can reach (e.g. localhost:4566 instead of
+    # the Docker service name localstack:4566). Defaults to s3_endpoint_url.
     s3_endpoint_url: str = "http://localhost:4566"
+    s3_public_url: str = ""
     s3_access_key: str = "test"
     s3_secret_key: str = "test"
     s3_bucket: str = "webank-verify"

@@ -59,9 +59,15 @@ def _to_detail(v: Verification) -> VerificationDetail:
             birth_place=df.get("birth_place"),
             document_number=df.get("document_number"),
             expiry_date=df.get("expiry_date"),
+            issue_date=df.get("issue_date"),
             is_expired=df.get("is_expired", False),
             age=df.get("age"),
             is_underage=df.get("is_underage", False),
+            sex=df.get("sex"),
+            height=df.get("height"),
+            profession=df.get("profession"),
+            father=df.get("father"),
+            mother=df.get("mother"),
             confidence=df.get("confidence", 0.0),
         )
 
