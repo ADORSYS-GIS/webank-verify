@@ -6,6 +6,7 @@
  */
 
 import { useEffect, useState, useCallback } from "react";
+import { createPortal } from "react-dom";
 import { X, ChevronLeft, ChevronRight, Download, ZoomIn, ZoomOut } from "lucide-react";
 
 interface Props {
@@ -73,7 +74,7 @@ export default function ImageLightbox({ images, initialIndex = 0, onClose }: Pro
     a.click();
   }
 
-  return (
+  return createPortal(
     <div
       className="fixed inset-0 z-50 flex flex-col bg-black/95"
       onClick={(e) => e.target === e.currentTarget && onClose()}
@@ -199,6 +200,7 @@ export default function ImageLightbox({ images, initialIndex = 0, onClose }: Pro
         {images.length > 1 ? "← → to navigate · " : ""}
         +/− to zoom · Esc to close
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

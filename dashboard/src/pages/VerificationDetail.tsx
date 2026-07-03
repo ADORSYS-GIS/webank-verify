@@ -16,9 +16,11 @@ type Tab = typeof TABS[number];
 
 const STATUS_BADGE: Record<string, JSX.Element> = {
   approved: <span className="flex items-center gap-1 text-green-400 text-sm font-medium"><CheckCircle size={14} /> APPROVED</span>,
-  approved_failed: <span className="flex items-center gap-1 text-yellow-400 text-sm font-medium"><AlertCircle size={14} /> APPROVED (delivery failed)</span>,
+  approved_pending: <span className="flex items-center gap-1 text-yellow-400 text-sm font-medium"><Loader2 size={14} className="animate-spin" /> Approved — notifying BFF…</span>,
+  approved_failed: <span className="flex items-center gap-1 text-orange-400 text-sm font-medium"><AlertCircle size={14} /> Approved — BFF not notified ⚠</span>,
   rejected: <span className="flex items-center gap-1 text-red-400 text-sm font-medium"><XCircle size={14} /> REJECTED</span>,
-  rejected_failed: <span className="flex items-center gap-1 text-yellow-400 text-sm font-medium"><AlertCircle size={14} /> REJECTED (delivery failed)</span>,
+  rejected_pending: <span className="flex items-center gap-1 text-yellow-400 text-sm font-medium"><Loader2 size={14} className="animate-spin" /> Rejected — notifying BFF…</span>,
+  rejected_failed: <span className="flex items-center gap-1 text-orange-400 text-sm font-medium"><AlertCircle size={14} /> Rejected — BFF not notified ⚠</span>,
   pending: <span className="flex items-center gap-1 text-yellow-400 text-sm font-medium"><Clock size={14} /> PENDING</span>,
   manual_review: <span className="flex items-center gap-1 text-yellow-400 text-sm font-medium"><Clock size={14} /> IN REVIEW</span>,
 };
@@ -54,6 +56,11 @@ export default function VerificationDetail({ id, onClose }: Props) {
     setActionError(null);
     try {
       await approveVerification(id);
+      // Optimistically stamp the new status so the UI reflects it immediately
+      // while the background refetch (driven by the 3s poll) catches up.
+      qc.setQueryData<Awaited<ReturnType<typeof fetchVerification>>>(["verification", id], (old) =>
+        old ? { ...old, status: "approved", webhook_delivery_status: "pending" } : old
+      );
       qc.invalidateQueries({ queryKey: ["verification", id] });
       qc.invalidateQueries({ queryKey: ["verifications"] });
     } catch (err) {
@@ -69,6 +76,10 @@ export default function VerificationDetail({ id, onClose }: Props) {
     try {
       await rejectVerification(id, rejectReason);
       setShowRejectModal(false);
+      // Optimistically stamp the new status so the UI reflects it immediately.
+      qc.setQueryData<Awaited<ReturnType<typeof fetchVerification>>>(["verification", id], (old) =>
+        old ? { ...old, status: "rejected", webhook_delivery_status: "pending" } : old
+      );
       qc.invalidateQueries({ queryKey: ["verification", id] });
       qc.invalidateQueries({ queryKey: ["verifications"] });
     } catch (err) {
@@ -115,9 +126,13 @@ export default function VerificationDetail({ id, onClose }: Props) {
         </div>
         <div className="flex items-center gap-3">
           {STATUS_BADGE[
-            v.webhook_delivery_status === "failed" && (v.status === "approved" || v.status === "rejected")
-              ? `${v.status}_failed`
-              : v.status
+            (() => {
+              const s = v.status;
+              const d = v.webhook_delivery_status;
+              if ((s === "approved" || s === "rejected") && d === "pending") return `${s}_pending`;
+              if ((s === "approved" || s === "rejected") && d === "failed")  return `${s}_failed`;
+              return s;
+            })()
           ] ?? <span className="text-gray-400 text-sm">{v.status.toUpperCase()}</span>}
           {v.status === "pending" || v.status === "manual_review" ? (
             <>
