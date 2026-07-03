@@ -287,7 +287,8 @@ def _strip_label_from_line(line: str, field_name: str) -> str:
         return ""
 
     # Try to split on common separators and take the part after the label
-    for sep in [":", "-", "/"]:
+    # (Avoid '/' and '-' as they are common in dates)
+    for sep in [":", " - "]:
         if sep in line:
             parts = line.split(sep)
             # Take the last non-empty part as the value
@@ -672,6 +673,12 @@ def extract_from_cni(front_b64: str, back_b64: str | None = None,
                             break
                     except ValueError:
                         pass
+
+    if not fields.document_number:
+        front_numbers = _extract_numbers_from_lines(front_lines)
+        if front_numbers:
+            front_numbers.sort(key=len, reverse=True)
+            fields.document_number = front_numbers[0]
 
     # ── Back side ─────────────────────────────────────────────────────────────
     if back_b64:

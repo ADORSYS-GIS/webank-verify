@@ -65,6 +65,7 @@ async def test_verify_liveness_idempotent():
 @pytest.mark.asyncio
 async def test_verify_liveness_auto_fire_webhook(mock_compute_risk, mock_resolve_person, mock_send_webhook, mock_run):
     db = AsyncMock()
+    db.add = MagicMock()
     doc_v = Verification(id="v1", user_id="user123", status="pending")
     # First execute is for Verification, second is for ReviewQueue
     db.execute.return_value = MockResult([doc_v, ReviewQueue(verification_id="v1")])
