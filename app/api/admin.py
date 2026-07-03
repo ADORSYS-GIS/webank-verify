@@ -254,10 +254,18 @@ async def approve_verification(
     event_type = "kyc.level2.approved"
     payload = {"user_id": v.user_id, "verification_id": verification_id}
     # Attach the stable identity key for downstream dedup (ADR 0005).
-    # Omitted when unknown — consumers must fail closed.
     person_id = v.person_id or await person_service.resolve_person_id(db, v.user_id)
     if person_id:
         payload["person_id"] = person_id
+    # Include the verified name from OCR so the BFF can update Keycloak
+    # and the Redis contact index without a separate API call.
+    if v.document_fields:
+        first_name = v.document_fields.get("first_name") or ""
+        last_name = v.document_fields.get("last_name") or ""
+        if first_name:
+            payload["first_name"] = first_name
+        if last_name:
+            payload["last_name"] = last_name
     # Fire webhook in the background so the dashboard stays responsive.
     # The webhook service retries 3x with [1,5,15]s backoff (21s worst case)
     # and logs every attempt to the webhook_deliveries table.
@@ -367,6 +375,13 @@ async def resend_webhook(
         person_id = v.person_id or await person_service.resolve_person_id(db, v.user_id)
         if person_id:
             payload["person_id"] = person_id
+        if v.document_fields:
+            first_name = v.document_fields.get("first_name") or ""
+            last_name = v.document_fields.get("last_name") or ""
+            if first_name:
+                payload["first_name"] = first_name
+            if last_name:
+                payload["last_name"] = last_name
     else:
         event_type = "kyc.level2.rejected"
         # Pull rejection reason from warnings if available
