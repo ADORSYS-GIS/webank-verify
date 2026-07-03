@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
+import logging
 import uuid
 from datetime import datetime, timezone
 from io import BytesIO
@@ -26,6 +28,38 @@ from app.services import person_service, storage_service, webhook_service
 from app.services.document_service import create_document_verification
 
 router = APIRouter(prefix="/admin", dependencies=[Depends(require_admin)])
+
+logger = logging.getLogger(__name__)
+
+
+async def _fire_webhook_background(
+    event_type: str,
+    payload: dict,
+    verification_id: str,
+) -> None:
+    """Fire a webhook in the background with its own DB session.
+
+    This decouples webhook delivery (which can take up to 21s with retries)
+    from the admin API response, so the operator dashboard stays responsive.
+    Delivery status is logged to the webhook_deliveries table and visible
+    in the Webhooks tab.
+    """
+    from app.core.db import AsyncSessionLocal  # noqa: PLC0415
+
+    async with AsyncSessionLocal() as session:
+        try:
+            await webhook_service.send_webhook(
+                event_type=event_type,
+                payload=payload,
+                verification_id=verification_id,
+                db=session,
+            )
+        except Exception:
+            logger.exception(
+                "Background webhook delivery failed for %s (verification %s)",
+                event_type,
+                verification_id,
+            )
 
 
 def _to_list_item(v: Verification) -> VerificationListItem:
@@ -216,11 +250,11 @@ async def approve_verification(
     person_id = v.person_id or await person_service.resolve_person_id(db, v.user_id)
     if person_id:
         payload["person_id"] = person_id
-    await webhook_service.send_webhook(
-        event_type=event_type,
-        payload=payload,
-        verification_id=verification_id,
-        db=db,
+    # Fire webhook in the background so the dashboard stays responsive.
+    # The webhook service retries 3x with [1,5,15]s backoff (21s worst case)
+    # and logs every attempt to the webhook_deliveries table.
+    asyncio.create_task(
+        _fire_webhook_background(event_type, payload, verification_id)
     )
 
     return {"status": "approved", "verification_id": verification_id, "person_id": v.person_id}
@@ -256,16 +290,14 @@ async def reject_verification(
     await db.commit()
 
     event_type = "kyc.level2.rejected"
-    await webhook_service.send_webhook(
-        event_type=event_type,
-        payload={
-            "user_id": v.user_id,
-            "verification_id": verification_id,
-            "reason": body.reason,
-            "fraud_flag": body.fraud_flag,
-        },
-        verification_id=verification_id,
-        db=db,
+    reject_payload = {
+        "user_id": v.user_id,
+        "verification_id": verification_id,
+        "reason": body.reason,
+        "fraud_flag": body.fraud_flag,
+    }
+    asyncio.create_task(
+        _fire_webhook_background(event_type, reject_payload, verification_id)
     )
 
     return {"status": "rejected", "verification_id": verification_id}

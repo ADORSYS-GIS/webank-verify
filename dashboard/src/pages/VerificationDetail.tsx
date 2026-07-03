@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { X, CheckCircle, XCircle, Clock } from "lucide-react";
+import { X, CheckCircle, XCircle, Clock, Loader2, AlertCircle } from "lucide-react";
 import { approveVerification, fetchVerification, rejectVerification } from "../lib/api";
 import LivenessTab from "../components/tabs/LivenessTab";
 import IDVerificationTab from "../components/tabs/IDVerificationTab";
@@ -29,6 +29,8 @@ export default function VerificationDetail({ id, onClose }: Props) {
   const [activeTab, setActiveTab] = useState<Tab>("Overview");
   const [rejectReason, setRejectReason] = useState("");
   const [showRejectModal, setShowRejectModal] = useState(false);
+  const [actionLoading, setActionLoading] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
   const qc = useQueryClient();
 
   const { data: v, isLoading } = useQuery({
@@ -37,16 +39,32 @@ export default function VerificationDetail({ id, onClose }: Props) {
   });
 
   async function handleApprove() {
-    await approveVerification(id);
-    qc.invalidateQueries({ queryKey: ["verification", id] });
-    qc.invalidateQueries({ queryKey: ["verifications"] });
+    setActionLoading(true);
+    setActionError(null);
+    try {
+      await approveVerification(id);
+      qc.invalidateQueries({ queryKey: ["verification", id] });
+      qc.invalidateQueries({ queryKey: ["verifications"] });
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "Failed to approve");
+    } finally {
+      setActionLoading(false);
+    }
   }
 
   async function handleReject() {
-    await rejectVerification(id, rejectReason);
-    setShowRejectModal(false);
-    qc.invalidateQueries({ queryKey: ["verification", id] });
-    qc.invalidateQueries({ queryKey: ["verifications"] });
+    setActionLoading(true);
+    setActionError(null);
+    try {
+      await rejectVerification(id, rejectReason);
+      setShowRejectModal(false);
+      qc.invalidateQueries({ queryKey: ["verification", id] });
+      qc.invalidateQueries({ queryKey: ["verifications"] });
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "Failed to reject");
+    } finally {
+      setActionLoading(false);
+    }
   }
 
   if (isLoading || !v) {
@@ -74,13 +92,16 @@ export default function VerificationDetail({ id, onClose }: Props) {
             <>
               <button
                 onClick={handleApprove}
-                className="bg-green-600 hover:bg-green-500 text-white text-xs font-medium px-3 py-1.5 rounded-md transition-colors"
+                disabled={actionLoading}
+                className="bg-green-600 hover:bg-green-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-medium px-3 py-1.5 rounded-md transition-colors flex items-center gap-1.5"
               >
+                {actionLoading && <Loader2 size={12} className="animate-spin" />}
                 Approve
               </button>
               <button
                 onClick={() => setShowRejectModal(true)}
-                className="bg-red-700 hover:bg-red-600 text-white text-xs font-medium px-3 py-1.5 rounded-md transition-colors"
+                disabled={actionLoading}
+                className="bg-red-700 hover:bg-red-600 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-medium px-3 py-1.5 rounded-md transition-colors"
               >
                 Reject
               </button>
@@ -91,6 +112,17 @@ export default function VerificationDetail({ id, onClose }: Props) {
           </button>
         </div>
       </div>
+
+      {/* Action error banner */}
+      {actionError && (
+        <div className="bg-red-950 border-b border-red-800 px-6 py-2 flex items-center gap-2">
+          <AlertCircle size={14} className="text-red-400 flex-shrink-0" />
+          <span className="text-xs text-red-300">{actionError}</span>
+          <button onClick={() => setActionError(null)} className="text-red-400 hover:text-red-300 ml-auto text-xs">
+            Dismiss
+          </button>
+        </div>
+      )}
 
       {/* Warnings banner */}
       {v.warnings.some((w) => w.severity === "critical") && (
@@ -152,9 +184,10 @@ export default function VerificationDetail({ id, onClose }: Props) {
               </button>
               <button
                 onClick={handleReject}
-                disabled={!rejectReason.trim()}
-                className="bg-red-700 disabled:opacity-40 hover:bg-red-600 text-white text-xs px-3 py-1.5 rounded-md"
+                disabled={!rejectReason.trim() || actionLoading}
+                className="bg-red-700 disabled:opacity-40 hover:bg-red-600 text-white text-xs px-3 py-1.5 rounded-md flex items-center gap-1.5"
               >
+                {actionLoading && <Loader2 size={12} className="animate-spin" />}
                 Confirm reject
               </button>
             </div>

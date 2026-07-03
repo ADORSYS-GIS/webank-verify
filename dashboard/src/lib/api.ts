@@ -31,19 +31,27 @@ export async function fetchVerification(id: string): Promise<VerificationDetail>
 }
 
 export async function approveVerification(id: string, notes?: string): Promise<void> {
-  await fetch(`${BASE}/verifications/${id}/approve`, {
+  const res = await fetch(`${BASE}/verifications/${id}/approve`, {
     method: "POST",
     headers,
     body: JSON.stringify({ notes }),
   });
+  if (!res.ok) {
+    const error = await res.text().catch(() => "Unknown error");
+    throw new Error(error || `Failed to approve (${res.status})`);
+  }
 }
 
 export async function rejectVerification(id: string, reason: string, fraud_flag = false): Promise<void> {
-  await fetch(`${BASE}/verifications/${id}/reject`, {
+  const res = await fetch(`${BASE}/verifications/${id}/reject`, {
     method: "POST",
     headers,
     body: JSON.stringify({ reason, fraud_flag }),
   });
+  if (!res.ok) {
+    const error = await res.text().catch(() => "Unknown error");
+    throw new Error(error || `Failed to reject (${res.status})`);
+  }
 }
 
 export async function fetchFrames(id: string): Promise<string[]> {
