@@ -82,6 +82,8 @@ export interface VerificationDetail {
   reviewer: string | null;
   review_notes: string | null;
   reviewed_at: string | null;
+  /** "pending" | "delivered" | "failed" */
+  webhook_delivery_status: string;
   created_at: string;
   updated_at: string;
 }

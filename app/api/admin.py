@@ -39,21 +39,28 @@ async def _fire_webhook_background(
 ) -> None:
     """Fire a webhook in the background with its own DB session.
 
-    This decouples webhook delivery (which can take up to 21s with retries)
-    from the admin API response, so the operator dashboard stays responsive.
-    Delivery status is logged to the webhook_deliveries table and visible
-    in the Webhooks tab.
+    After all attempts complete, writes the final delivery status
+    (delivered / failed) back to the verification record so the
+    dashboard can surface a warning banner when delivery fails.
     """
     from app.core.db import AsyncSessionLocal  # noqa: PLC0415
 
     async with AsyncSessionLocal() as session:
         try:
-            await webhook_service.send_webhook(
+            delivered = await webhook_service.send_webhook(
                 event_type=event_type,
                 payload=payload,
                 verification_id=verification_id,
                 db=session,
             )
+            # Write delivery outcome back to the verification row
+            result = await session.execute(
+                select(Verification).where(Verification.id == verification_id)
+            )
+            v = result.scalar_one_or_none()
+            if v:
+                v.webhook_delivery_status = "delivered" if delivered else "failed"
+                await session.commit()
         except Exception:
             logger.exception(
                 "Background webhook delivery failed for %s (verification %s)",
@@ -164,6 +171,7 @@ def _to_detail(v: Verification) -> VerificationDetail:
         reviewer=v.reviewer,
         review_notes=v.review_notes,
         reviewed_at=v.reviewed_at,
+        webhook_delivery_status=v.webhook_delivery_status,
         created_at=v.created_at,
         updated_at=v.updated_at,
     )
@@ -330,7 +338,67 @@ async def get_frames(
     return {"verification_id": verification_id, "urls": urls}
 
 
-@router.get("/stats", response_model=AdminStats)
+@router.post("/verifications/{verification_id}/resend-webhook")
+async def resend_webhook(
+    verification_id: str,
+    operator: str = Depends(operator_identity),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Re-fire the kyc.level2.approved or kyc.level2.rejected webhook.
+
+    Used when the original webhook delivery failed (e.g. BFF was down or
+    returned 4xx/5xx). The verification status in the DB is not changed —
+    only the webhook is re-sent based on the current status.
+    """
+    result = await db.execute(select(Verification).where(Verification.id == verification_id))
+    v = result.scalar_one_or_none()
+    if not v:
+        raise HTTPException(status_code=404, detail="Verification not found")
+
+    if v.status not in ("approved", "rejected"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot resend webhook for status '{v.status}'. Only approved/rejected records support resend.",
+        )
+
+    if v.status == "approved":
+        event_type = "kyc.level2.approved"
+        payload: dict = {"user_id": v.user_id, "verification_id": verification_id}
+        person_id = v.person_id or await person_service.resolve_person_id(db, v.user_id)
+        if person_id:
+            payload["person_id"] = person_id
+    else:
+        event_type = "kyc.level2.rejected"
+        # Pull rejection reason from warnings if available
+        reason = ""
+        if v.warnings:
+            for w in v.warnings:
+                if isinstance(w, dict) and w.get("code") == "OPERATOR_REJECTED":
+                    reason = w.get("message", "")
+                    break
+        payload = {
+            "user_id": v.user_id,
+            "verification_id": verification_id,
+            "reason": reason,
+            "fraud_flag": False,
+        }
+
+    db.add(VerificationEvent(
+        verification_id=verification_id,
+        event="webhook_resent",
+        payload={"operator": operator, "event_type": event_type},
+    ))
+    # Reset status to pending while the new delivery is in-flight
+    v.webhook_delivery_status = "pending"
+    await db.commit()
+
+    asyncio.create_task(
+        _fire_webhook_background(event_type, payload, verification_id)
+    )
+
+    return {"status": "queued", "event_type": event_type, "verification_id": verification_id}
+
+
 async def get_stats(db: AsyncSession = Depends(get_db)) -> AdminStats:
     today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
 

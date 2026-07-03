@@ -127,6 +127,8 @@ class VerificationDetail(BaseModel):
     reviewer: str | None = None
     review_notes: str | None = None
     reviewed_at: datetime | None = None
+    # "pending" | "delivered" | "failed"
+    webhook_delivery_status: str = "pending"
     created_at: datetime
     updated_at: datetime
 

@@ -41,6 +41,11 @@ class Verification(Base):
     reviewer: Mapped[str | None] = mapped_column(String, nullable=True)
     review_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Tracks whether the post-approval/rejection webhook was delivered to the BFF.
+    # "pending"  = webhook not yet fired (or still in-flight)
+    # "delivered" = BFF confirmed receipt with 2xx
+    # "failed"   = all retry attempts exhausted with non-2xx / network error
+    webhook_delivery_status: Mapped[str] = mapped_column(String, nullable=False, default="pending")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
 

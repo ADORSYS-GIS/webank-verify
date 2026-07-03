@@ -32,16 +32,20 @@ async def send_webhook(
     verification_id: str | None = None,
     db=None,
 ) -> bool:
-    """
-    Send HMAC-SHA256 signed webhook. Returns True if delivered successfully.
-    Logs every attempt to webhook_deliveries table.
+    """Send HMAC-SHA256 signed webhook with up to 3 attempts.
+
+    Returns True if any attempt is acknowledged with a 2xx status.
+    Each attempt is logged as a separate row in webhook_deliveries
+    (distinct delivery_id per attempt so history is never overwritten).
     """
     url = target_url or settings.webhook_url
     key = secret or settings.webhook_secret
-    delivery_id = str(uuid.uuid4())
 
+    # Build the signed envelope once — all retry attempts share the same
+    # envelope id so the BFF can deduplicate on it.
+    envelope_id = str(uuid.uuid4())
     envelope = {
-        "id": delivery_id,
+        "id": envelope_id,
         "event": event_type,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "data": payload,
@@ -53,8 +57,12 @@ async def send_webhook(
     backoff_seconds = [1, 5, 15]
 
     for attempt in range(1, max_attempts + 1):
-        http_status = None
-        response_body = None
+        # Each attempt gets its own delivery row (unique id) so history is
+        # append-only and no row is ever silently overwritten on retry.
+        delivery_id = str(uuid.uuid4())
+        http_status: int | None = None
+        response_body: str | None = None
+
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 resp = await client.post(
@@ -64,27 +72,25 @@ async def send_webhook(
                         "Content-Type": "application/json",
                         "X-Webank-Signature": signature,
                         "X-Webank-Event": event_type,
+                        # Let the BFF deduplicate on the envelope id
+                        "X-Webank-Delivery-Id": envelope_id,
                     },
                 )
                 http_status = resp.status_code
                 response_body = resp.text[:500]
 
-            if db:
-                await _log_delivery(
-                    db, delivery_id, verification_id, event_type, url,
-                    http_status, envelope, response_body, attempt,
-                )
-
-            if 200 <= http_status < 300:
-                return True
-
         except Exception as exc:
             response_body = str(exc)[:500]
+
+        finally:
             if db:
                 await _log_delivery(
                     db, delivery_id, verification_id, event_type, url,
                     http_status, envelope, response_body, attempt,
                 )
+
+        if http_status is not None and 200 <= http_status < 300:
+            return True
 
         if attempt < max_attempts:
             import asyncio  # noqa: PLC0415

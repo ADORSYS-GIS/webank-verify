@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
-import { X, CheckCircle, XCircle, Clock, Loader2, AlertCircle } from "lucide-react";
-import { approveVerification, fetchVerification, rejectVerification } from "../lib/api";
+import { X, CheckCircle, XCircle, Clock, Loader2, AlertCircle, RefreshCw } from "lucide-react";
+import { approveVerification, fetchVerification, rejectVerification, resendWebhook } from "../lib/api";
 import LivenessTab from "../components/tabs/LivenessTab";
 import IDVerificationTab from "../components/tabs/IDVerificationTab";
 import FaceMatchTab from "../components/tabs/FaceMatchTab";
@@ -32,12 +32,19 @@ export default function VerificationDetail({ id, onClose }: Props) {
   const [showRejectModal, setShowRejectModal] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [resendLoading, setResendLoading] = useState(false);
   const qc = useQueryClient();
 
   const { data: v, isLoading } = useQuery({
     queryKey: ["verification", id],
     queryFn: () => fetchVerification(id),
     placeholderData: keepPreviousData,
+    // Poll every 3s while webhook delivery is still in-flight so the
+    // banner updates automatically without a manual refresh.
+    refetchInterval: (query) => {
+      const status = query.state.data?.webhook_delivery_status;
+      return status === "pending" ? 3000 : false;
+    },
   });
 
   async function handleApprove() {
@@ -66,6 +73,22 @@ export default function VerificationDetail({ id, onClose }: Props) {
       setActionError(err instanceof Error ? err.message : "Failed to reject");
     } finally {
       setActionLoading(false);
+    }
+  }
+
+  async function handleResend() {
+    setResendLoading(true);
+    try {
+      await resendWebhook(id);
+      // Refresh after a short delay to let the background task update status
+      setTimeout(() => {
+        qc.invalidateQueries({ queryKey: ["verification", id] });
+        qc.invalidateQueries({ queryKey: ["webhooks", id] });
+      }, 2500);
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "Failed to resend webhook");
+    } finally {
+      setResendLoading(false);
     }
   }
 
@@ -126,6 +149,36 @@ export default function VerificationDetail({ id, onClose }: Props) {
         </div>
       )}
 
+      {/* Webhook delivery failure banner — shown when BFF did not receive the event */}
+      {v.webhook_delivery_status === "failed" && (
+        <div className="bg-yellow-950 border-b border-yellow-800 px-6 py-2 flex items-center gap-2">
+          <AlertCircle size={14} className="text-yellow-400 shrink-0" />
+          <span className="text-xs text-yellow-200 flex-1">
+            <strong>Webhook delivery failed.</strong> The BFF was not notified — the user's KYC level has not been updated.
+            The system will retry automatically, or you can resend now.
+          </span>
+          <button
+            onClick={handleResend}
+            disabled={resendLoading}
+            className="flex items-center gap-1 text-xs bg-yellow-700 hover:bg-yellow-600 disabled:opacity-50 text-white px-2.5 py-1 rounded-md transition-colors shrink-0"
+          >
+            {resendLoading ? <Loader2 size={11} className="animate-spin" /> : <RefreshCw size={11} />}
+            {resendLoading ? "Resending…" : "Resend Now"}
+          </button>
+        </div>
+      )}
+
+      {/* Webhook pending banner — shown right after approve/reject while delivery is in-flight */}
+      {v.webhook_delivery_status === "pending" &&
+        (v.status === "approved" || v.status === "rejected") && (
+        <div className="bg-gray-800 border-b border-gray-700 px-6 py-2 flex items-center gap-2">
+          <Loader2 size={13} className="text-gray-400 animate-spin shrink-0" />
+          <span className="text-xs text-gray-400">
+            Notifying BFF… This page will update automatically.
+          </span>
+        </div>
+      )}
+
       {/* Warnings banner */}
       {v.warnings.some((w) => w.severity === "critical") && (
         <div className="bg-red-950 border-b border-red-800 px-6 py-2 flex gap-2 flex-wrap">
@@ -164,7 +217,7 @@ export default function VerificationDetail({ id, onClose }: Props) {
           {activeTab === "AML Screening" && <AMLTab verification={v} />}
           {activeTab === "IP Analysis" && <IPAnalysisTab ip={v.ip_intelligence} deviceInfo={v.device_info} />}
           {activeTab === "Events" && <EventsTab verificationId={id} />}
-          {activeTab === "Webhooks" && <WebhooksTab verificationId={id} />}
+          {activeTab === "Webhooks" && <WebhooksTab verificationId={id} verificationStatus={v.status} />}
         </ErrorBoundary>
       </div>
 
