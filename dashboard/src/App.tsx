@@ -4,6 +4,7 @@ import { Plus, X, Upload } from "lucide-react";
 import { fetchVerifications, createVerification } from "./lib/api";
 import VerificationList from "./pages/VerificationList";
 import VerificationDetail from "./pages/VerificationDetail";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 
 export default function App() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -22,7 +23,7 @@ export default function App() {
   return (
     <div className="flex h-screen overflow-hidden">
       {/* Left panel */}
-      <aside className="w-80 flex-shrink-0 bg-gray-900 border-r border-gray-800 flex flex-col">
+      <aside className="w-80 shrink-0 bg-gray-900 border-r border-gray-800 flex flex-col">
         <div className="p-4 border-b border-gray-800">
           <div className="flex items-center justify-between mb-3">
             <h1 className="text-lg font-semibold text-white">Verifications</h1>
@@ -86,13 +87,15 @@ export default function App() {
 
       {/* Right panel */}
       <main className="flex-1 overflow-hidden bg-gray-950">
-        {selectedId ? (
-          <VerificationDetail id={selectedId} onClose={() => setSelectedId(null)} />
-        ) : (
-          <div className="flex items-center justify-center h-full text-gray-600 text-sm">
-            Select a verification to review
-          </div>
-        )}
+        <ErrorBoundary label="Verification detail failed to render">
+          {selectedId ? (
+            <VerificationDetail id={selectedId} onClose={() => setSelectedId(null)} />
+          ) : (
+            <div className="flex items-center justify-center h-full text-gray-600 text-sm">
+              Select a verification to review
+            </div>
+          )}
+        </ErrorBoundary>
       </main>
 
       {/* New Verification Modal */}

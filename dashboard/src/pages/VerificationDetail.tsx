@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
 import { X, CheckCircle, XCircle, Clock, Loader2, AlertCircle } from "lucide-react";
 import { approveVerification, fetchVerification, rejectVerification } from "../lib/api";
 import LivenessTab from "../components/tabs/LivenessTab";
@@ -9,6 +9,7 @@ import AMLTab from "../components/tabs/AMLTab";
 import IPAnalysisTab from "../components/tabs/IPAnalysisTab";
 import EventsTab from "../components/tabs/EventsTab";
 import WebhooksTab from "../components/tabs/WebhooksTab";
+import { ErrorBoundary } from "../components/ErrorBoundary";
 
 const TABS = ["Overview", "ID Verification", "Liveness", "Face Match", "AML Screening", "IP Analysis", "Events", "Webhooks"] as const;
 type Tab = typeof TABS[number];
@@ -36,6 +37,7 @@ export default function VerificationDetail({ id, onClose }: Props) {
   const { data: v, isLoading } = useQuery({
     queryKey: ["verification", id],
     queryFn: () => fetchVerification(id),
+    placeholderData: keepPreviousData,
   });
 
   async function handleApprove() {
@@ -116,7 +118,7 @@ export default function VerificationDetail({ id, onClose }: Props) {
       {/* Action error banner */}
       {actionError && (
         <div className="bg-red-950 border-b border-red-800 px-6 py-2 flex items-center gap-2">
-          <AlertCircle size={14} className="text-red-400 flex-shrink-0" />
+          <AlertCircle size={14} className="text-red-400 shrink-0" />
           <span className="text-xs text-red-300">{actionError}</span>
           <button onClick={() => setActionError(null)} className="text-red-400 hover:text-red-300 ml-auto text-xs">
             Dismiss
@@ -154,14 +156,16 @@ export default function VerificationDetail({ id, onClose }: Props) {
 
       {/* Tab content */}
       <div className="flex-1 overflow-y-auto p-6">
-        {activeTab === "Overview" && <OverviewTab v={v} />}
-        {activeTab === "ID Verification" && <IDVerificationTab doc={v.document} verificationId={id} />}
-        {activeTab === "Liveness" && <LivenessTab verificationId={id} liveness={v.liveness} />}
-        {activeTab === "Face Match" && <FaceMatchTab faceMatch={v.face_match} verificationId={id} />}
-        {activeTab === "AML Screening" && <AMLTab verification={v} />}
-        {activeTab === "IP Analysis" && <IPAnalysisTab ip={v.ip_intelligence} deviceInfo={v.device_info} />}
-        {activeTab === "Events" && <EventsTab verificationId={id} />}
-        {activeTab === "Webhooks" && <WebhooksTab verificationId={id} />}
+        <ErrorBoundary label={`${activeTab} tab failed to render`}>
+          {activeTab === "Overview" && <OverviewTab v={v} />}
+          {activeTab === "ID Verification" && <IDVerificationTab doc={v.document} verificationId={id} />}
+          {activeTab === "Liveness" && <LivenessTab verificationId={id} liveness={v.liveness} />}
+          {activeTab === "Face Match" && <FaceMatchTab faceMatch={v.face_match} verificationId={id} />}
+          {activeTab === "AML Screening" && <AMLTab verification={v} />}
+          {activeTab === "IP Analysis" && <IPAnalysisTab ip={v.ip_intelligence} deviceInfo={v.device_info} />}
+          {activeTab === "Events" && <EventsTab verificationId={id} />}
+          {activeTab === "Webhooks" && <WebhooksTab verificationId={id} />}
+        </ErrorBoundary>
       </div>
 
       {/* Reject modal */}
@@ -267,7 +271,7 @@ function OverviewTab({ v }: { v: ReturnType<typeof fetchVerification> extends Pr
 function Field({ label, value, mono, truncate }: { label: string; value: string; mono?: boolean; truncate?: boolean }) {
   return (
     <div className="flex justify-between gap-4">
-      <dt className="text-xs text-gray-500 flex-shrink-0">{label}</dt>
+      <dt className="text-xs text-gray-500 shrink-0">{label}</dt>
       <dd className={`text-xs text-gray-200 text-right ${mono ? "font-mono" : ""} ${truncate ? "truncate max-w-[160px]" : ""}`}>
         {value || "—"}
       </dd>

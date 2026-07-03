@@ -15,6 +15,9 @@ export default function FaceMatchTab({ faceMatch, verificationId }: Props) {
 
   const similarity = faceMatch?.similarity ?? 0;
   const passed = faceMatch?.passed ?? false;
+  const distance = faceMatch?.distance ?? 0;
+  const model = faceMatch?.model ?? "—";
+  const threshold = faceMatch?.threshold_used ?? 0;
 
   return (
     <div className="space-y-6">
@@ -72,10 +75,10 @@ export default function FaceMatchTab({ faceMatch, verificationId }: Props) {
 
           {/* Details */}
           <div className="bg-gray-900 border border-gray-800 rounded-lg p-4 space-y-2">
-            <Row label="Model" value={faceMatch.model} />
+            <Row label="Model" value={model} />
             <Row label="Similarity" value={`${similarity.toFixed(2)}%`} />
-            <Row label="Distance" value={faceMatch.distance.toFixed(4)} />
-            <Row label="Threshold" value={`${(faceMatch.threshold_used * 100).toFixed(0)}%`} />
+            <Row label="Distance" value={distance.toFixed(4)} />
+            <Row label="Threshold" value={threshold > 0 ? `${(threshold * 100).toFixed(0)}%` : "—"} />
             <Row label="Result" value={passed ? "PASSED" : "FAILED"} />
           </div>
         </>
