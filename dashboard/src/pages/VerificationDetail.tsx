@@ -16,7 +16,9 @@ type Tab = typeof TABS[number];
 
 const STATUS_BADGE: Record<string, JSX.Element> = {
   approved: <span className="flex items-center gap-1 text-green-400 text-sm font-medium"><CheckCircle size={14} /> APPROVED</span>,
+  approved_failed: <span className="flex items-center gap-1 text-yellow-400 text-sm font-medium"><AlertCircle size={14} /> APPROVED (delivery failed)</span>,
   rejected: <span className="flex items-center gap-1 text-red-400 text-sm font-medium"><XCircle size={14} /> REJECTED</span>,
+  rejected_failed: <span className="flex items-center gap-1 text-yellow-400 text-sm font-medium"><AlertCircle size={14} /> REJECTED (delivery failed)</span>,
   pending: <span className="flex items-center gap-1 text-yellow-400 text-sm font-medium"><Clock size={14} /> PENDING</span>,
   manual_review: <span className="flex items-center gap-1 text-yellow-400 text-sm font-medium"><Clock size={14} /> IN REVIEW</span>,
 };
@@ -112,7 +114,11 @@ export default function VerificationDetail({ id, onClose }: Props) {
           </div>
         </div>
         <div className="flex items-center gap-3">
-          {STATUS_BADGE[v.status] ?? <span className="text-gray-400 text-sm">{v.status.toUpperCase()}</span>}
+          {STATUS_BADGE[
+            v.webhook_delivery_status === "failed" && (v.status === "approved" || v.status === "rejected")
+              ? `${v.status}_failed`
+              : v.status
+          ] ?? <span className="text-gray-400 text-sm">{v.status.toUpperCase()}</span>}
           {v.status === "pending" || v.status === "manual_review" ? (
             <>
               <button
