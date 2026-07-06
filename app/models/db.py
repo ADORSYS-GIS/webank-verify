@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, Integer, String, Text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -41,6 +41,9 @@ class Verification(Base):
     reviewer: Mapped[str | None] = mapped_column(String, nullable=True)
     review_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Persisted at reject time so the reconciler and resend endpoint can
+    # rebuild the webhook payload without losing the flag (fail-closed on fraud).
+    fraud_flag: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     # Tracks whether the post-approval/rejection webhook was delivered to the BFF.
     # "pending"  = webhook not yet fired (or still in-flight)
     # "delivered" = BFF confirmed receipt with 2xx

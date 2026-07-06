@@ -55,6 +55,12 @@ async def verify_liveness(
 
     # Fetch the latest document verification for this user with row-level lock
     # to prevent race conditions from concurrent liveness submissions.
+    #
+    # Tradeoff: the FOR UPDATE lock is held across CPU-bound liveness analysis
+    # and S3 uploads (multiple seconds per request). At MVP traffic this is
+    # acceptable — concurrent submissions for the same user are rare. Under
+    # load, split into two short transactions (lock+mark → heavy work →
+    # re-lock+write) to avoid connection pile-up.
     stmt = (
         select(Verification)
         .where(Verification.user_id == body.user_id, Verification.type == "document")
@@ -184,6 +190,15 @@ async def verify_liveness(
     doc_verification.warnings = merged_warnings
     doc_verification.status = status
 
+    # Assign the stable biometric person_id on auto-approve (ADR 0005).
+    # Without this, resolve_person_id below returns None for a first-time
+    # user (it only finds already-approved documents), so the webhook fires
+    # without person_id and the face embedding never enters the dedup pool.
+    if status == "approved":
+        doc_verification.person_id = await person_service.assign_person_id(
+            db, doc_verification
+        )
+
     # Add verification event for liveness check
     db.add(
         VerificationEvent(
@@ -213,28 +228,18 @@ async def verify_liveness(
 
     await db.commit()
 
-    # Auto-fire webhook if decision is clear (approved or rejected)
-    # For manual_review, the webhook fires when operator approves/rejects
+    # Auto-fire webhook if decision is clear (approved or rejected).
+    # For manual_review, the webhook fires when operator approves/rejects.
+    # Fired in the background so the mobile client's HTTP response isn't
+    # blocked for up to ~21s during retries. The delivery status is written
+    # back to the verification row by fire_webhook_background so the
+    # reconciler can retry on failure.
     if status in ("approved", "rejected"):
-        event_type = (
-            "kyc.level2.approved" if status == "approved" else "kyc.level2.rejected"
-        )
-        payload = {
-            "user_id": body.user_id,
-            "verification_id": doc_verification.id,
-            "score": liveness_result.liveness_score,
-        }
-        # Attach the stable identity key from the user's approved document
-        # dossier so downstream dedup works (ADR 0005). Omitted when unknown —
-        # consumers must fail closed.
-        person_id = await person_service.resolve_person_id(db, body.user_id)
-        if person_id:
-            payload["person_id"] = person_id
-        await webhook_service.send_webhook(
+        event_type, payload = await webhook_service.build_webhook_payload(db, doc_verification)
+        webhook_service.fire_webhook_background(
             event_type=event_type,
             payload=payload,
             verification_id=doc_verification.id,
-            db=db,
         )
 
     return LivenessResponse(

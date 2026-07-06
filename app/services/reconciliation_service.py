@@ -17,8 +17,6 @@ import logging
 
 from sqlalchemy import select
 
-from app.core.config import settings
-
 logger = logging.getLogger(__name__)
 
 # How often the reconciliation loop runs (seconds)
@@ -26,36 +24,6 @@ RECONCILE_INTERVAL = 60
 
 # Maximum number of records to reconcile per run (safety cap)
 RECONCILE_BATCH_SIZE = 20
-
-
-async def _build_payload(v) -> tuple[str, dict]:
-    """Build the (event_type, payload) for a verification based on its status."""
-    from app.services import person_service  # noqa: PLC0415
-    from app.core.db import AsyncSessionLocal  # noqa: PLC0415
-
-    if v.status == "approved":
-        event_type = "kyc.level2.approved"
-        payload: dict = {"user_id": v.user_id, "verification_id": v.id}
-        async with AsyncSessionLocal() as session:
-            person_id = v.person_id or await person_service.resolve_person_id(session, v.user_id)
-        if person_id:
-            payload["person_id"] = person_id
-    else:
-        event_type = "kyc.level2.rejected"
-        reason = ""
-        if v.warnings:
-            for w in v.warnings:
-                if isinstance(w, dict) and w.get("code") == "OPERATOR_REJECTED":
-                    reason = w.get("message", "")
-                    break
-        payload = {
-            "user_id": v.user_id,
-            "verification_id": v.id,
-            "reason": reason,
-            "fraud_flag": False,
-        }
-
-    return event_type, payload
 
 
 async def _reconcile_once() -> None:
@@ -85,7 +53,11 @@ async def _reconcile_once() -> None:
 
     for v in stale:
         try:
-            event_type, payload = await _build_payload(v)
+            # Build the webhook payload from the shared builder so the
+            # fraud_flag and first_name/last_name are preserved on
+            # redelivery (review feedback on PR #63).
+            async with AsyncSessionLocal() as session:
+                event_type, payload = await webhook_service.build_webhook_payload(session, v)
 
             async with AsyncSessionLocal() as session:
                 # Mark as pending so we don't double-retry while in-flight

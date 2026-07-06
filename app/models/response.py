@@ -16,28 +16,6 @@ class LivenessResponse(BaseModel):
     score: int
 
 
-class DocumentInfo(BaseModel):
-    type: str
-    status: str
-    date: str
-
-
-class LivenessInfo(BaseModel):
-    status: str
-    date: str
-    score: int
-
-
-class DossierResponse(BaseModel):
-    user_id: str
-    status: str
-    kyc_level: int
-    updated_at: str
-    documents: list[DocumentInfo] = []
-    liveness_info: LivenessInfo | None = None
-    rejection_message: str | None = None
-
-
 class IdentityResponse(BaseModel):
     user_id: str
     person_id: str | None = None  # stable biometric key (ADR 0005); null if unknown

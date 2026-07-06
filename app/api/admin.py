@@ -2,12 +2,9 @@
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import logging
-import uuid
 from datetime import datetime, timezone
-from io import BytesIO
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from sqlalchemy import func, select
@@ -30,43 +27,6 @@ from app.services.document_service import create_document_verification
 router = APIRouter(prefix="/admin", dependencies=[Depends(require_admin)])
 
 logger = logging.getLogger(__name__)
-
-
-async def _fire_webhook_background(
-    event_type: str,
-    payload: dict,
-    verification_id: str,
-) -> None:
-    """Fire a webhook in the background with its own DB session.
-
-    After all attempts complete, writes the final delivery status
-    (delivered / failed) back to the verification record so the
-    dashboard can surface a warning banner when delivery fails.
-    """
-    from app.core.db import AsyncSessionLocal  # noqa: PLC0415
-
-    async with AsyncSessionLocal() as session:
-        try:
-            delivered = await webhook_service.send_webhook(
-                event_type=event_type,
-                payload=payload,
-                verification_id=verification_id,
-                db=session,
-            )
-            # Write delivery outcome back to the verification row
-            result = await session.execute(
-                select(Verification).where(Verification.id == verification_id)
-            )
-            v = result.scalar_one_or_none()
-            if v:
-                v.webhook_delivery_status = "delivered" if delivered else "failed"
-                await session.commit()
-        except Exception:
-            logger.exception(
-                "Background webhook delivery failed for %s (verification %s)",
-                event_type,
-                verification_id,
-            )
 
 
 def _to_list_item(v: Verification) -> VerificationListItem:
@@ -251,26 +211,15 @@ async def approve_verification(
     await db.commit()
 
     # In the 2-level model, all verifications are Level 2 (document + liveness combined)
-    event_type = "kyc.level2.approved"
-    payload = {"user_id": v.user_id, "verification_id": verification_id}
-    # Attach the stable identity key for downstream dedup (ADR 0005).
-    person_id = v.person_id or await person_service.resolve_person_id(db, v.user_id)
-    if person_id:
-        payload["person_id"] = person_id
-    # Include the verified name from OCR so the BFF can update Keycloak
-    # and the Redis contact index without a separate API call.
-    if v.document_fields:
-        first_name = v.document_fields.get("first_name") or ""
-        last_name = v.document_fields.get("last_name") or ""
-        if first_name:
-            payload["first_name"] = first_name
-        if last_name:
-            payload["last_name"] = last_name
+    # Build the webhook payload from the shared builder so all call sites stay in sync.
+    event_type, payload = await webhook_service.build_webhook_payload(db, v)
     # Fire webhook in the background so the dashboard stays responsive.
     # The webhook service retries 3x with [1,5,15]s backoff (21s worst case)
     # and logs every attempt to the webhook_deliveries table.
-    asyncio.create_task(
-        _fire_webhook_background(event_type, payload, verification_id)
+    webhook_service.fire_webhook_background(
+        event_type=event_type,
+        payload=payload,
+        verification_id=verification_id,
     )
 
     return {"status": "approved", "verification_id": verification_id, "person_id": v.person_id}
@@ -292,6 +241,10 @@ async def reject_verification(
     v.reviewer = operator
     v.review_notes = body.reason
     v.reviewed_at = datetime.now(timezone.utc)
+    # Persist the fraud flag on the verification row so the reconciler and
+    # resend endpoint can rebuild the webhook payload without losing it
+    # (fail-closed on fraud — see review feedback on PR #63).
+    v.fraud_flag = body.fraud_flag
 
     # Add rejection reason to warnings
     warnings = list(v.warnings or [])
@@ -305,15 +258,12 @@ async def reject_verification(
     ))
     await db.commit()
 
-    event_type = "kyc.level2.rejected"
-    reject_payload = {
-        "user_id": v.user_id,
-        "verification_id": verification_id,
-        "reason": body.reason,
-        "fraud_flag": body.fraud_flag,
-    }
-    asyncio.create_task(
-        _fire_webhook_background(event_type, reject_payload, verification_id)
+    # Build the webhook payload from the shared builder so all call sites stay in sync.
+    event_type, reject_payload = await webhook_service.build_webhook_payload(db, v)
+    webhook_service.fire_webhook_background(
+        event_type=event_type,
+        payload=reject_payload,
+        verification_id=verification_id,
     )
 
     return {"status": "rejected", "verification_id": verification_id}
@@ -369,34 +319,9 @@ async def resend_webhook(
             detail=f"Cannot resend webhook for status '{v.status}'. Only approved/rejected records support resend.",
         )
 
-    if v.status == "approved":
-        event_type = "kyc.level2.approved"
-        payload: dict = {"user_id": v.user_id, "verification_id": verification_id}
-        person_id = v.person_id or await person_service.resolve_person_id(db, v.user_id)
-        if person_id:
-            payload["person_id"] = person_id
-        if v.document_fields:
-            first_name = v.document_fields.get("first_name") or ""
-            last_name = v.document_fields.get("last_name") or ""
-            if first_name:
-                payload["first_name"] = first_name
-            if last_name:
-                payload["last_name"] = last_name
-    else:
-        event_type = "kyc.level2.rejected"
-        # Pull rejection reason from warnings if available
-        reason = ""
-        if v.warnings:
-            for w in v.warnings:
-                if isinstance(w, dict) and w.get("code") == "OPERATOR_REJECTED":
-                    reason = w.get("message", "")
-                    break
-        payload = {
-            "user_id": v.user_id,
-            "verification_id": verification_id,
-            "reason": reason,
-            "fraud_flag": False,
-        }
+    # Build the webhook payload from the shared builder so the fraud_flag
+    # and first_name/last_name are preserved on redelivery (review feedback).
+    event_type, payload = await webhook_service.build_webhook_payload(db, v)
 
     db.add(VerificationEvent(
         verification_id=verification_id,
@@ -407,8 +332,10 @@ async def resend_webhook(
     v.webhook_delivery_status = "pending"
     await db.commit()
 
-    asyncio.create_task(
-        _fire_webhook_background(event_type, payload, verification_id)
+    webhook_service.fire_webhook_background(
+        event_type=event_type,
+        payload=payload,
+        verification_id=verification_id,
     )
 
     return {"status": "queued", "event_type": event_type, "verification_id": verification_id}
