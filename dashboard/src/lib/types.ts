@@ -23,9 +23,15 @@ export interface DocumentFields {
   birth_place: string | null;
   document_number: string | null;
   expiry_date: string | null;
+  issue_date: string | null;
   is_expired: boolean;
   age: number | null;
   is_underage: boolean;
+  sex: string | null;
+  height: string | null;
+  profession: string | null;
+  father: string | null;
+  mother: string | null;
   confidence: number;
 }
 
@@ -76,6 +82,8 @@ export interface VerificationDetail {
   reviewer: string | null;
   review_notes: string | null;
   reviewed_at: string | null;
+  /** "pending" | "delivered" | "failed" */
+  webhook_delivery_status: string;
   created_at: string;
   updated_at: string;
 }

@@ -49,9 +49,9 @@ All KYC/identity work goes here — never to `webank-kyc-manager`. **Default bra
   is enforced *downstream* (`UNIQUE(person_id)`), not at source.
 - **Webhooks** (`webhook_service.py`): HMAC-SHA256 over the canonical JSON body
   (`X-Webank-Signature: sha256=...`); envelope `{id, event, timestamp, data}`; 3 retries
-  `[1,5,15]s`; logged to `webhook_deliveries`. Events `kyc.level2.*` (document) /
-  `kyc.level3.*` (other); `data` carries `person_id` when known. Exact contract:
-  `webank-context/topology/contracts.md`.
+  `[1,5,15]s`; logged to `webhook_deliveries`. Events `kyc.level2.approved` /
+  `kyc.level2.rejected` (2-level KYC model: document + liveness combined); `data` carries
+  `person_id` when known. Exact contract: `webank-context/topology/contracts.md`.
 - **Dedup warning** (`check_duplicate`) is still an operator *warning* only, in-memory (no
   vector index) — fine at current scale; revisit with a vector index if the approved set grows.
 - **Fail closed** on identity/liveness checks.

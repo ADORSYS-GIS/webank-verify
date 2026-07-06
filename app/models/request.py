@@ -17,17 +17,6 @@ class LivenessVerifyRequest(BaseModel):
     user_agent: str | None = None
 
 
-class ProfessionalSubmitRequest(BaseModel):
-    user_id: str
-    professional_type: str = Field(..., description="'AGENT' or 'MERCHANT'")
-    documents: dict[str, str] = Field(default_factory=dict, description="Document name → base64 image")
-    metadata: dict[str, str] = Field(default_factory=dict)
-
-
-class RecoveryQueueRequest(BaseModel):
-    user_id: str
-
-
 class AdminApproveRequest(BaseModel):
     notes: str | None = None
 

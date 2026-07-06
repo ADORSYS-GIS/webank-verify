@@ -1,7 +1,7 @@
 import { useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { X, CheckCircle, XCircle, Clock } from "lucide-react";
-import { approveVerification, fetchVerification, rejectVerification } from "../lib/api";
+import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
+import { X, CheckCircle, XCircle, Clock, Loader2, AlertCircle, RefreshCw } from "lucide-react";
+import { approveVerification, fetchVerification, rejectVerification, resendWebhook } from "../lib/api";
 import LivenessTab from "../components/tabs/LivenessTab";
 import IDVerificationTab from "../components/tabs/IDVerificationTab";
 import FaceMatchTab from "../components/tabs/FaceMatchTab";
@@ -9,13 +9,18 @@ import AMLTab from "../components/tabs/AMLTab";
 import IPAnalysisTab from "../components/tabs/IPAnalysisTab";
 import EventsTab from "../components/tabs/EventsTab";
 import WebhooksTab from "../components/tabs/WebhooksTab";
+import { ErrorBoundary } from "../components/ErrorBoundary";
 
 const TABS = ["Overview", "ID Verification", "Liveness", "Face Match", "AML Screening", "IP Analysis", "Events", "Webhooks"] as const;
 type Tab = typeof TABS[number];
 
 const STATUS_BADGE: Record<string, JSX.Element> = {
   approved: <span className="flex items-center gap-1 text-green-400 text-sm font-medium"><CheckCircle size={14} /> APPROVED</span>,
+  approved_pending: <span className="flex items-center gap-1 text-yellow-400 text-sm font-medium"><Loader2 size={14} className="animate-spin" /> Approved — notifying BFF…</span>,
+  approved_failed: <span className="flex items-center gap-1 text-orange-400 text-sm font-medium"><AlertCircle size={14} /> Approved — BFF not notified ⚠</span>,
   rejected: <span className="flex items-center gap-1 text-red-400 text-sm font-medium"><XCircle size={14} /> REJECTED</span>,
+  rejected_pending: <span className="flex items-center gap-1 text-yellow-400 text-sm font-medium"><Loader2 size={14} className="animate-spin" /> Rejected — notifying BFF…</span>,
+  rejected_failed: <span className="flex items-center gap-1 text-orange-400 text-sm font-medium"><AlertCircle size={14} /> Rejected — BFF not notified ⚠</span>,
   pending: <span className="flex items-center gap-1 text-yellow-400 text-sm font-medium"><Clock size={14} /> PENDING</span>,
   manual_review: <span className="flex items-center gap-1 text-yellow-400 text-sm font-medium"><Clock size={14} /> IN REVIEW</span>,
 };
@@ -29,24 +34,75 @@ export default function VerificationDetail({ id, onClose }: Props) {
   const [activeTab, setActiveTab] = useState<Tab>("Overview");
   const [rejectReason, setRejectReason] = useState("");
   const [showRejectModal, setShowRejectModal] = useState(false);
+  const [actionLoading, setActionLoading] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [resendLoading, setResendLoading] = useState(false);
   const qc = useQueryClient();
 
   const { data: v, isLoading } = useQuery({
     queryKey: ["verification", id],
     queryFn: () => fetchVerification(id),
+    placeholderData: keepPreviousData,
+    // Poll every 3s while webhook delivery is still in-flight so the
+    // banner updates automatically without a manual refresh.
+    refetchInterval: (query) => {
+      const status = query.state.data?.webhook_delivery_status;
+      return status === "pending" ? 3000 : false;
+    },
   });
 
   async function handleApprove() {
-    await approveVerification(id);
-    qc.invalidateQueries({ queryKey: ["verification", id] });
-    qc.invalidateQueries({ queryKey: ["verifications"] });
+    setActionLoading(true);
+    setActionError(null);
+    try {
+      await approveVerification(id);
+      // Optimistically stamp the new status so the UI reflects it immediately
+      // while the background refetch (driven by the 3s poll) catches up.
+      qc.setQueryData<Awaited<ReturnType<typeof fetchVerification>>>(["verification", id], (old) =>
+        old ? { ...old, status: "approved", webhook_delivery_status: "pending" } : old
+      );
+      qc.invalidateQueries({ queryKey: ["verification", id] });
+      qc.invalidateQueries({ queryKey: ["verifications"] });
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "Failed to approve");
+    } finally {
+      setActionLoading(false);
+    }
   }
 
   async function handleReject() {
-    await rejectVerification(id, rejectReason);
-    setShowRejectModal(false);
-    qc.invalidateQueries({ queryKey: ["verification", id] });
-    qc.invalidateQueries({ queryKey: ["verifications"] });
+    setActionLoading(true);
+    setActionError(null);
+    try {
+      await rejectVerification(id, rejectReason);
+      setShowRejectModal(false);
+      // Optimistically stamp the new status so the UI reflects it immediately.
+      qc.setQueryData<Awaited<ReturnType<typeof fetchVerification>>>(["verification", id], (old) =>
+        old ? { ...old, status: "rejected", webhook_delivery_status: "pending" } : old
+      );
+      qc.invalidateQueries({ queryKey: ["verification", id] });
+      qc.invalidateQueries({ queryKey: ["verifications"] });
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "Failed to reject");
+    } finally {
+      setActionLoading(false);
+    }
+  }
+
+  async function handleResend() {
+    setResendLoading(true);
+    try {
+      await resendWebhook(id);
+      // Refresh after a short delay to let the background task update status
+      setTimeout(() => {
+        qc.invalidateQueries({ queryKey: ["verification", id] });
+        qc.invalidateQueries({ queryKey: ["webhooks", id] });
+      }, 2500);
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "Failed to resend webhook");
+    } finally {
+      setResendLoading(false);
+    }
   }
 
   if (isLoading || !v) {
@@ -69,18 +125,29 @@ export default function VerificationDetail({ id, onClose }: Props) {
           </div>
         </div>
         <div className="flex items-center gap-3">
-          {STATUS_BADGE[v.status] ?? <span className="text-gray-400 text-sm">{v.status.toUpperCase()}</span>}
+          {STATUS_BADGE[
+            (() => {
+              const s = v.status;
+              const d = v.webhook_delivery_status;
+              if ((s === "approved" || s === "rejected") && d === "pending") return `${s}_pending`;
+              if ((s === "approved" || s === "rejected") && d === "failed")  return `${s}_failed`;
+              return s;
+            })()
+          ] ?? <span className="text-gray-400 text-sm">{v.status.toUpperCase()}</span>}
           {v.status === "pending" || v.status === "manual_review" ? (
             <>
               <button
                 onClick={handleApprove}
-                className="bg-green-600 hover:bg-green-500 text-white text-xs font-medium px-3 py-1.5 rounded-md transition-colors"
+                disabled={actionLoading}
+                className="bg-green-600 hover:bg-green-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-medium px-3 py-1.5 rounded-md transition-colors flex items-center gap-1.5"
               >
+                {actionLoading && <Loader2 size={12} className="animate-spin" />}
                 Approve
               </button>
               <button
                 onClick={() => setShowRejectModal(true)}
-                className="bg-red-700 hover:bg-red-600 text-white text-xs font-medium px-3 py-1.5 rounded-md transition-colors"
+                disabled={actionLoading}
+                className="bg-red-700 hover:bg-red-600 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-medium px-3 py-1.5 rounded-md transition-colors"
               >
                 Reject
               </button>
@@ -91,6 +158,47 @@ export default function VerificationDetail({ id, onClose }: Props) {
           </button>
         </div>
       </div>
+
+      {/* Action error banner */}
+      {actionError && (
+        <div className="bg-red-950 border-b border-red-800 px-6 py-2 flex items-center gap-2">
+          <AlertCircle size={14} className="text-red-400 shrink-0" />
+          <span className="text-xs text-red-300">{actionError}</span>
+          <button onClick={() => setActionError(null)} className="text-red-400 hover:text-red-300 ml-auto text-xs">
+            Dismiss
+          </button>
+        </div>
+      )}
+
+      {/* Webhook delivery failure banner — shown when BFF did not receive the event */}
+      {v.webhook_delivery_status === "failed" && (
+        <div className="bg-yellow-950 border-b border-yellow-800 px-6 py-2 flex items-center gap-2">
+          <AlertCircle size={14} className="text-yellow-400 shrink-0" />
+          <span className="text-xs text-yellow-200 flex-1">
+            <strong>Webhook delivery failed.</strong> The BFF was not notified — the user's KYC level has not been updated.
+            The system will retry automatically, or you can resend now.
+          </span>
+          <button
+            onClick={handleResend}
+            disabled={resendLoading}
+            className="flex items-center gap-1 text-xs bg-yellow-700 hover:bg-yellow-600 disabled:opacity-50 text-white px-2.5 py-1 rounded-md transition-colors shrink-0"
+          >
+            {resendLoading ? <Loader2 size={11} className="animate-spin" /> : <RefreshCw size={11} />}
+            {resendLoading ? "Resending…" : "Resend Now"}
+          </button>
+        </div>
+      )}
+
+      {/* Webhook pending banner — shown right after approve/reject while delivery is in-flight */}
+      {v.webhook_delivery_status === "pending" &&
+        (v.status === "approved" || v.status === "rejected") && (
+        <div className="bg-gray-800 border-b border-gray-700 px-6 py-2 flex items-center gap-2">
+          <Loader2 size={13} className="text-gray-400 animate-spin shrink-0" />
+          <span className="text-xs text-gray-400">
+            Notifying BFF… This page will update automatically.
+          </span>
+        </div>
+      )}
 
       {/* Warnings banner */}
       {v.warnings.some((w) => w.severity === "critical") && (
@@ -122,14 +230,16 @@ export default function VerificationDetail({ id, onClose }: Props) {
 
       {/* Tab content */}
       <div className="flex-1 overflow-y-auto p-6">
-        {activeTab === "Overview" && <OverviewTab v={v} />}
-        {activeTab === "ID Verification" && <IDVerificationTab doc={v.document} />}
-        {activeTab === "Liveness" && <LivenessTab verificationId={id} liveness={v.liveness} />}
-        {activeTab === "Face Match" && <FaceMatchTab faceMatch={v.face_match} verificationId={id} />}
-        {activeTab === "AML Screening" && <AMLTab verification={v} />}
-        {activeTab === "IP Analysis" && <IPAnalysisTab ip={v.ip_intelligence} deviceInfo={v.device_info} />}
-        {activeTab === "Events" && <EventsTab verificationId={id} />}
-        {activeTab === "Webhooks" && <WebhooksTab verificationId={id} />}
+        <ErrorBoundary label={`${activeTab} tab failed to render`}>
+          {activeTab === "Overview" && <OverviewTab v={v} />}
+          {activeTab === "ID Verification" && <IDVerificationTab doc={v.document} verificationId={id} />}
+          {activeTab === "Liveness" && <LivenessTab verificationId={id} liveness={v.liveness} />}
+          {activeTab === "Face Match" && <FaceMatchTab faceMatch={v.face_match} verificationId={id} />}
+          {activeTab === "AML Screening" && <AMLTab verification={v} />}
+          {activeTab === "IP Analysis" && <IPAnalysisTab ip={v.ip_intelligence} deviceInfo={v.device_info} />}
+          {activeTab === "Events" && <EventsTab verificationId={id} />}
+          {activeTab === "Webhooks" && <WebhooksTab verificationId={id} verificationStatus={v.status} />}
+        </ErrorBoundary>
       </div>
 
       {/* Reject modal */}
@@ -152,9 +262,10 @@ export default function VerificationDetail({ id, onClose }: Props) {
               </button>
               <button
                 onClick={handleReject}
-                disabled={!rejectReason.trim()}
-                className="bg-red-700 disabled:opacity-40 hover:bg-red-600 text-white text-xs px-3 py-1.5 rounded-md"
+                disabled={!rejectReason.trim() || actionLoading}
+                className="bg-red-700 disabled:opacity-40 hover:bg-red-600 text-white text-xs px-3 py-1.5 rounded-md flex items-center gap-1.5"
               >
+                {actionLoading && <Loader2 size={12} className="animate-spin" />}
                 Confirm reject
               </button>
             </div>
@@ -208,7 +319,7 @@ function OverviewTab({ v }: { v: ReturnType<typeof fetchVerification> extends Pr
         <dl className="space-y-2">
           <Field label="Session ID" value={v.id} mono truncate />
           <Field label="Created at" value={new Date(v.created_at).toLocaleString("fr-FR")} />
-          <Field label="Type" value={v.type} />
+          <Field label="Liveness" value={v.liveness ? "✓ Completed" : "✗ Pending"} />
           {v.reviewer && <Field label="Reviewed by" value={v.reviewer} />}
           {v.review_notes && <Field label="Notes" value={v.review_notes} />}
         </dl>
@@ -234,7 +345,7 @@ function OverviewTab({ v }: { v: ReturnType<typeof fetchVerification> extends Pr
 function Field({ label, value, mono, truncate }: { label: string; value: string; mono?: boolean; truncate?: boolean }) {
   return (
     <div className="flex justify-between gap-4">
-      <dt className="text-xs text-gray-500 flex-shrink-0">{label}</dt>
+      <dt className="text-xs text-gray-500 shrink-0">{label}</dt>
       <dd className={`text-xs text-gray-200 text-right ${mono ? "font-mono" : ""} ${truncate ? "truncate max-w-[160px]" : ""}`}>
         {value || "—"}
       </dd>

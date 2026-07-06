@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, Integer, String, Text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -41,6 +41,14 @@ class Verification(Base):
     reviewer: Mapped[str | None] = mapped_column(String, nullable=True)
     review_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Persisted at reject time so the reconciler and resend endpoint can
+    # rebuild the webhook payload without losing the flag (fail-closed on fraud).
+    fraud_flag: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # Tracks whether the post-approval/rejection webhook was delivered to the BFF.
+    # "pending"  = webhook not yet fired (or still in-flight)
+    # "delivered" = BFF confirmed receipt with 2xx
+    # "failed"   = all retry attempts exhausted with non-2xx / network error
+    webhook_delivery_status: Mapped[str] = mapped_column(String, nullable=False, default="pending")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
 
@@ -79,17 +87,3 @@ class ReviewQueue(Base):
     priority: Mapped[int] = mapped_column(Integer, default=0)
     status: Mapped[str] = mapped_column(String, default="pending")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
-
-
-class ProfessionalDossier(Base):
-    __tablename__ = "professional_dossiers"
-
-    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
-    user_id: Mapped[str] = mapped_column(String, nullable=False, unique=True, index=True)
-    professional_type: Mapped[str] = mapped_column(String, nullable=False)
-    status: Mapped[str] = mapped_column(String, default="pending")
-    documents: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
-    metadata_: Mapped[dict | None] = mapped_column("metadata", JSONB, nullable=True)
-    rejection_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
-    submitted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
-    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

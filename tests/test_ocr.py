@@ -43,7 +43,8 @@ def test_extract_cni_basic(mock_decode, mock_reader):
             (None, "NOM: MBIDA", 0.9),
             (None, "PRENOM: JEAN PAUL", 0.88),
             (None, "NÉ LE 15/06/1990", 0.85),
-            (None, "À YAOUNDÉ", 0.80),
+            (None, "LIEU DE NAISSANCE / PLACE OF BIRTH", 0.90),
+            (None, "YAOUNDÉ", 0.80),
             (None, "N° 123456789", 0.92),
         ]
     )

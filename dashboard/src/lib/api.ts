@@ -31,19 +31,27 @@ export async function fetchVerification(id: string): Promise<VerificationDetail>
 }
 
 export async function approveVerification(id: string, notes?: string): Promise<void> {
-  await fetch(`${BASE}/verifications/${id}/approve`, {
+  const res = await fetch(`${BASE}/verifications/${id}/approve`, {
     method: "POST",
     headers,
     body: JSON.stringify({ notes }),
   });
+  if (!res.ok) {
+    const error = await res.text().catch(() => "Unknown error");
+    throw new Error(error || `Failed to approve (${res.status})`);
+  }
 }
 
 export async function rejectVerification(id: string, reason: string, fraud_flag = false): Promise<void> {
-  await fetch(`${BASE}/verifications/${id}/reject`, {
+  const res = await fetch(`${BASE}/verifications/${id}/reject`, {
     method: "POST",
     headers,
     body: JSON.stringify({ reason, fraud_flag }),
   });
+  if (!res.ok) {
+    const error = await res.text().catch(() => "Unknown error");
+    throw new Error(error || `Failed to reject (${res.status})`);
+  }
 }
 
 export async function fetchFrames(id: string): Promise<string[]> {
@@ -62,5 +70,44 @@ export async function fetchStats(): Promise<AdminStats> {
 export async function fetchWebhooks(id: string): Promise<WebhookDelivery[]> {
   const res = await fetch(`${BASE}/webhooks/${id}`, { headers });
   if (!res.ok) return [];
+  return res.json();
+}
+
+export async function resendWebhook(id: string): Promise<void> {
+  const res = await fetch(`${BASE}/verifications/${id}/resend-webhook`, {
+    method: "POST",
+    headers,
+  });
+  if (!res.ok) {
+    const error = await res.text().catch(() => "Unknown error");
+    throw new Error(error || `Failed to resend webhook (${res.status})`);
+  }
+}
+
+export async function createVerification(data: {
+  user_id: string;
+  document_type: string;
+  front_image: File;
+  back_image?: File;
+}): Promise<{ verification_id: string; status: string; doc_type: string; user_id: string }> {
+  const formData = new FormData();
+  formData.append("user_id", data.user_id);
+  formData.append("document_type", data.document_type);
+  formData.append("front_image", data.front_image);
+  if (data.back_image) {
+    formData.append("back_image", data.back_image);
+  }
+
+  const res = await fetch(`${BASE}/verifications/create`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${ADMIN_TOKEN}`,
+    },
+    body: formData,
+  });
+  if (!res.ok) {
+    const error = await res.text();
+    throw new Error(error || "Failed to create verification");
+  }
   return res.json();
 }

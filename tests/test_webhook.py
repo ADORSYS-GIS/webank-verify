@@ -9,7 +9,7 @@ from app.services import webhook_service
 def test_signed_body_matches_transmitted_body():
     envelope = {
         "id": "abc",
-        "event": "kyc.level3.approved",
+        "event": "kyc.level2.approved",
         "timestamp": "2026-06-08T00:00:00+00:00",
         "data": {"user_id": "u1", "check_id": "c1"},
     }

@@ -1,20 +1,20 @@
 """Tests for document-type mapping, incl. récépissé support (ADR 0007)."""
 
-from app.api.document import _DOC_TYPE_MAP
+from app.services.document_service import DOC_TYPE_MAP
 
 
 def test_passport_maps_to_passport():
-    assert _DOC_TYPE_MAP.get("passport") == "PASSPORT"
+    assert DOC_TYPE_MAP.get("passport") == "PASSPORT"
 
 
 def test_recepisse_is_supported():
-    assert _DOC_TYPE_MAP.get("recepisse") == "RECEPISSE"
+    assert DOC_TYPE_MAP.get("recepisse") == "RECEPISSE"
 
 
 def test_national_id_falls_back_to_cni():
     # national_id (and anything unrecognized) is not in the map → CNI fallback.
-    assert _DOC_TYPE_MAP.get("national_id", "CNI") == "CNI"
-    assert _DOC_TYPE_MAP.get("something-else", "CNI") == "CNI"
+    assert DOC_TYPE_MAP.get("national_id", "CNI") == "CNI"
+    assert DOC_TYPE_MAP.get("something-else", "CNI") == "CNI"
 
 
 def test_recepisse_uses_ocr_not_mrz():

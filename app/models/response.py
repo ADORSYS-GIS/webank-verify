@@ -16,41 +16,10 @@ class LivenessResponse(BaseModel):
     score: int
 
 
-class DocumentInfo(BaseModel):
-    type: str
-    status: str
-    date: str
-
-
-class LivenessInfo(BaseModel):
-    status: str
-    date: str
-    score: int
-
-
-class DossierResponse(BaseModel):
-    user_id: str
-    status: str
-    kyc_level: int
-    updated_at: str
-    documents: list[DocumentInfo] = []
-    liveness_info: LivenessInfo | None = None
-    rejection_message: str | None = None
-
-
 class IdentityResponse(BaseModel):
     user_id: str
     person_id: str | None = None  # stable biometric key (ADR 0005); null if unknown
     kyc_level2_approved: bool = False
-
-
-class ProfessionalDossierResponse(BaseModel):
-    user_id: str
-    professional_type: str
-    status: str  # pending | in_review | approved | rejected | expired
-    submitted_at: str | None = None
-    reviewed_at: str | None = None
-    rejection_reason: str | None = None
 
 
 # ── Extended verification detail (admin dashboard) ───────────────────────────
@@ -63,9 +32,15 @@ class DocumentFields(BaseModel):
     birth_place: str | None = None
     document_number: str | None = None
     expiry_date: str | None = None
+    issue_date: str | None = None
     is_expired: bool = False
     age: int | None = None
     is_underage: bool = False
+    sex: str | None = None
+    height: str | None = None
+    profession: str | None = None
+    father: str | None = None
+    mother: str | None = None
     confidence: float = 0.0
 
 
@@ -130,6 +105,8 @@ class VerificationDetail(BaseModel):
     reviewer: str | None = None
     review_notes: str | None = None
     reviewed_at: datetime | None = None
+    # "pending" | "delivered" | "failed"
+    webhook_delivery_status: str = "pending"
     created_at: datetime
     updated_at: datetime
 

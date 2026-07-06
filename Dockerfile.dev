@@ -24,6 +24,11 @@ RUN if [ "$USE_LOCAL_TENSORFLOW" = "true" ] && ls /tmp/wheels/tensorflow*.whl 1>
 # Stage 3: Install all remaining dependencies
 RUN pip install --no-cache-dir -r requirements.txt watchfiles
 
+# Pre-download easyocr French model (~300 MB) and deepface ArcFace model (~100 MB)
+# so the first request doesn't hang downloading + decompressing them.
+RUN python -c "import easyocr; easyocr.Reader(['fr'], gpu=False)" 2>/dev/null || true
+RUN python -c "from deepface import DeepFace; DeepFace.build_model('ArcFace')" 2>/dev/null || true
+
 COPY . .
 
 EXPOSE 8070

@@ -1,6 +1,7 @@
 """FastAPI application — webank-verify identity verification service."""
 
 from contextlib import asynccontextmanager
+import asyncio
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -8,10 +9,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from prometheus_fastapi_instrumentator import Instrumentator
 
-from app.api import admin, document, dossier, health, identity, liveness, professional, recovery
+from app.api import admin, document, health, identity, liveness
 from app.core.config import settings
 from app.core.db import close_db, init_db
 from app.core.redis import close_redis
+from app.services.reconciliation_service import reconciliation_loop
 
 
 @asynccontextmanager
@@ -19,8 +21,17 @@ async def lifespan(app: FastAPI):
     # Startup
     settings.validate_secrets()
     await init_db()
+    # Start the webhook reconciliation background task.
+    # It retries any approved/rejected verifications where the BFF webhook
+    # delivery failed (e.g. BFF was down or returned 4xx/5xx).
+    reconcile_task = asyncio.create_task(reconciliation_loop())
     yield
-    # Shutdown
+    # Shutdown — cancel the reconciliation task cleanly
+    reconcile_task.cancel()
+    try:
+        await reconcile_task
+    except asyncio.CancelledError:
+        pass
     await close_db()
     await close_redis()
 
@@ -49,10 +60,7 @@ Instrumentator().instrument(app).expose(app, endpoint="/metrics")
 # BFF-facing routes
 app.include_router(document.router, tags=["BFF"])
 app.include_router(liveness.router, tags=["BFF"])
-app.include_router(dossier.router, tags=["BFF"])
 app.include_router(identity.router, tags=["BFF"])
-app.include_router(professional.router, tags=["BFF"])
-app.include_router(recovery.router, tags=["BFF"])
 app.include_router(health.router, tags=["Internal"])
 
 # Admin dashboard API

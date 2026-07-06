@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import base64
+import logging
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,8 +22,11 @@ from app.models.response import (
     WebhookDelivery as WebhookDeliveryResponse,
 )
 from app.services import person_service, storage_service, webhook_service
+from app.services.document_service import create_document_verification
 
 router = APIRouter(prefix="/admin", dependencies=[Depends(require_admin)])
+
+logger = logging.getLogger(__name__)
 
 
 def _to_list_item(v: Verification) -> VerificationListItem:
@@ -55,9 +60,15 @@ def _to_detail(v: Verification) -> VerificationDetail:
             birth_place=df.get("birth_place"),
             document_number=df.get("document_number"),
             expiry_date=df.get("expiry_date"),
+            issue_date=df.get("issue_date"),
             is_expired=df.get("is_expired", False),
             age=df.get("age"),
             is_underage=df.get("is_underage", False),
+            sex=df.get("sex"),
+            height=df.get("height"),
+            profession=df.get("profession"),
+            father=df.get("father"),
+            mother=df.get("mother"),
             confidence=df.get("confidence", 0.0),
         )
 
@@ -120,6 +131,7 @@ def _to_detail(v: Verification) -> VerificationDetail:
         reviewer=v.reviewer,
         review_notes=v.review_notes,
         reviewed_at=v.reviewed_at,
+        webhook_delivery_status=v.webhook_delivery_status,
         created_at=v.created_at,
         updated_at=v.updated_at,
     )
@@ -198,20 +210,16 @@ async def approve_verification(
     ))
     await db.commit()
 
-    # Determine correct webhook event based on verification type
-    event_type = "kyc.level2.approved" if v.type == "document" else "kyc.level3.approved"
-    payload = {"user_id": v.user_id, "verification_id": verification_id}
-    # Attach the stable identity key for downstream dedup. For non-document
-    # approvals (level3) resolve it from the user's approved document dossier.
-    # Omitted when unknown — consumers must fail closed (ADR 0005).
-    person_id = v.person_id or await person_service.resolve_person_id(db, v.user_id)
-    if person_id:
-        payload["person_id"] = person_id
-    await webhook_service.send_webhook(
+    # In the 2-level model, all verifications are Level 2 (document + liveness combined)
+    # Build the webhook payload from the shared builder so all call sites stay in sync.
+    event_type, payload = await webhook_service.build_webhook_payload(db, v)
+    # Fire webhook in the background so the dashboard stays responsive.
+    # The webhook service retries 3x with [1,5,15]s backoff (21s worst case)
+    # and logs every attempt to the webhook_deliveries table.
+    webhook_service.fire_webhook_background(
         event_type=event_type,
         payload=payload,
         verification_id=verification_id,
-        db=db,
     )
 
     return {"status": "approved", "verification_id": verification_id, "person_id": v.person_id}
@@ -233,6 +241,10 @@ async def reject_verification(
     v.reviewer = operator
     v.review_notes = body.reason
     v.reviewed_at = datetime.now(timezone.utc)
+    # Persist the fraud flag on the verification row so the reconciler and
+    # resend endpoint can rebuild the webhook payload without losing it
+    # (fail-closed on fraud — see review feedback on PR #63).
+    v.fraud_flag = body.fraud_flag
 
     # Add rejection reason to warnings
     warnings = list(v.warnings or [])
@@ -246,17 +258,12 @@ async def reject_verification(
     ))
     await db.commit()
 
-    event_type = "kyc.level2.rejected" if v.type == "document" else "kyc.level3.rejected"
-    await webhook_service.send_webhook(
+    # Build the webhook payload from the shared builder so all call sites stay in sync.
+    event_type, reject_payload = await webhook_service.build_webhook_payload(db, v)
+    webhook_service.fire_webhook_background(
         event_type=event_type,
-        payload={
-            "user_id": v.user_id,
-            "verification_id": verification_id,
-            "reason": body.reason,
-            "fraud_flag": body.fraud_flag,
-        },
+        payload=reject_payload,
         verification_id=verification_id,
-        db=db,
     )
 
     return {"status": "rejected", "verification_id": verification_id}
@@ -289,7 +296,51 @@ async def get_frames(
     return {"verification_id": verification_id, "urls": urls}
 
 
-@router.get("/stats", response_model=AdminStats)
+@router.post("/verifications/{verification_id}/resend-webhook")
+async def resend_webhook(
+    verification_id: str,
+    operator: str = Depends(operator_identity),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Re-fire the kyc.level2.approved or kyc.level2.rejected webhook.
+
+    Used when the original webhook delivery failed (e.g. BFF was down or
+    returned 4xx/5xx). The verification status in the DB is not changed —
+    only the webhook is re-sent based on the current status.
+    """
+    result = await db.execute(select(Verification).where(Verification.id == verification_id))
+    v = result.scalar_one_or_none()
+    if not v:
+        raise HTTPException(status_code=404, detail="Verification not found")
+
+    if v.status not in ("approved", "rejected"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot resend webhook for status '{v.status}'. Only approved/rejected records support resend.",
+        )
+
+    # Build the webhook payload from the shared builder so the fraud_flag
+    # and first_name/last_name are preserved on redelivery (review feedback).
+    event_type, payload = await webhook_service.build_webhook_payload(db, v)
+
+    db.add(VerificationEvent(
+        verification_id=verification_id,
+        event="webhook_resent",
+        payload={"operator": operator, "event_type": event_type},
+    ))
+    # Reset status to pending while the new delivery is in-flight
+    v.webhook_delivery_status = "pending"
+    await db.commit()
+
+    webhook_service.fire_webhook_background(
+        event_type=event_type,
+        payload=payload,
+        verification_id=verification_id,
+    )
+
+    return {"status": "queued", "event_type": event_type, "verification_id": verification_id}
+
+
 async def get_stats(db: AsyncSession = Depends(get_db)) -> AdminStats:
     today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
 
@@ -342,3 +393,123 @@ async def get_webhooks(
         )
         for d in deliveries
     ]
+
+
+# Maximum file size for uploads (10MB)
+MAX_UPLOAD_SIZE_BYTES = 10 * 1024 * 1024
+
+# Allowed MIME types for document uploads
+ALLOWED_MIME_TYPES = {"image/jpeg", "image/png", "image/webp"}
+
+def _verify_magic_bytes(content: bytes, content_type: str) -> bool:
+    """Verify that file bytes match the claimed content type (OWASP A03)."""
+    if content_type == "image/jpeg" and content.startswith(b"\xFF\xD8\xFF"):
+        return True
+    if content_type == "image/png" and content.startswith(b"\x89PNG\r\n\x1a\n"):
+        return True
+    if content_type == "image/webp" and content.startswith(b"RIFF") and content[8:12] == b"WEBP":
+        return True
+    return False
+
+
+@router.post("/verifications/create")
+async def create_verification(
+    user_id: str = Form(..., description="User ID for the verification"),
+    document_type: str = Form(..., description="Document type: 'CNI' or 'PASSPORT'"),
+    front_image: UploadFile = File(..., description="Front image of the document"),
+    back_image: UploadFile | None = File(None, description="Back image of the document (optional)"),
+    operator: str = Depends(operator_identity),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Create a verification record from admin-uploaded document images.
+
+    This endpoint is used for the WhatsApp verification path where an admin
+    collects documents via WhatsApp chat and creates the verification manually.
+
+    Security:
+    - Max file size: 10MB per image
+    - Allowed MIME types: image/jpeg, image/png, image/webp
+    - Filename is sanitized (UUID generated, client name ignored)
+    """
+    # Validate document type
+    doc_type_upper = document_type.upper()
+    if doc_type_upper not in ("CNI", "PASSPORT"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid document_type: {document_type}. Must be 'CNI' or 'PASSPORT'",
+        )
+
+    # Validate MIME type for front image
+    if front_image.content_type not in ALLOWED_MIME_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid file type for front_image: {front_image.content_type}. "
+            f"Allowed types: {', '.join(ALLOWED_MIME_TYPES)}",
+        )
+
+    # Read and validate front image
+    front_content = await front_image.read()
+    if len(front_content) > MAX_UPLOAD_SIZE_BYTES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"front_image exceeds maximum size of {MAX_UPLOAD_SIZE_BYTES // (1024 * 1024)}MB",
+        )
+    if not _verify_magic_bytes(front_content, front_image.content_type):
+        raise HTTPException(
+            status_code=400,
+            detail="front_image content does not match claimed MIME type",
+        )
+
+    # Convert front image to base64
+    front_b64 = base64.b64encode(front_content).decode("utf-8")
+
+    # Process back image if provided
+    images = [front_b64]
+    # Check if back_image actually has content
+    if back_image and getattr(back_image, "size", 0) > 0:
+        # Validate MIME type for back image
+        if back_image.content_type not in ALLOWED_MIME_TYPES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid file type for back_image: {back_image.content_type}. "
+                f"Allowed types: {', '.join(ALLOWED_MIME_TYPES)}",
+            )
+
+        back_content = await back_image.read()
+        if len(back_content) > MAX_UPLOAD_SIZE_BYTES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"back_image exceeds maximum size of {MAX_UPLOAD_SIZE_BYTES // (1024 * 1024)}MB",
+            )
+        if not _verify_magic_bytes(back_content, back_image.content_type):
+            raise HTTPException(
+                status_code=400,
+                detail="back_image content does not match claimed MIME type",
+            )
+
+        back_b64 = base64.b64encode(back_content).decode("utf-8")
+        images.append(back_b64)
+
+    # Map document type to the expected input format
+    # The document_service expects 'national_id' for CNI and 'passport' for PASSPORT
+    doc_type_input = "passport" if doc_type_upper == "PASSPORT" else "national_id"
+
+    # Create verification using shared service
+    verification = await create_document_verification(
+        db=db,
+        user_id=user_id,
+        images=images,
+        doc_type_input=doc_type_input,
+        client_ip=None,  # Admin-initiated, no client IP
+        user_agent=f"admin/{operator}",
+        operator=operator,
+    )
+
+    await db.commit()
+
+    return {
+        "verification_id": verification.id,
+        "status": verification.status,
+        "doc_type": verification.doc_type,
+        "user_id": verification.user_id,
+    }

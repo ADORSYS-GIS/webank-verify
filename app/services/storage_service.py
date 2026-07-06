@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import logging
 import uuid
 from datetime import timedelta
 
@@ -12,11 +13,19 @@ from botocore.exceptions import ClientError
 from app.core.config import settings
 
 _client = None
+_presign_client = None
+
+logger = logging.getLogger(__name__)
 
 
 def _get_client():
     global _client
     if _client is None:
+        if not settings.s3_endpoint_url:
+            raise ValueError(
+                "S3_ENDPOINT_URL is not configured. "
+                "Set S3_ENDPOINT_URL (e.g. http://localstack:4566) to enable document storage."
+            )
         _client = boto3.client(
             "s3",
             endpoint_url=settings.s3_endpoint_url,
@@ -29,7 +38,40 @@ def _get_client():
             _client.head_bucket(Bucket=settings.s3_bucket)
         except ClientError:
             _client.create_bucket(Bucket=settings.s3_bucket)
+            logger.info("Created S3 bucket: %s", settings.s3_bucket)
     return _client
+
+
+def _get_presign_client():
+    """Return an S3 client whose endpoint is reachable from the browser.
+
+    Uploads use the internal endpoint (``S3_ENDPOINT_URL``, e.g.
+    ``http://localstack:4566``) so traffic stays on the Docker network.
+    Presigned URLs are handed to the browser, which cannot resolve Docker
+    service names — so we build them with ``S3_PUBLIC_URL`` when set.
+
+    Falls back to the same client as uploads when ``S3_PUBLIC_URL`` is
+    unset (single-host deployments where the browser can already reach
+    ``S3_ENDPOINT_URL``).
+    """
+    global _presign_client
+    public_url = settings.s3_public_url or settings.s3_endpoint_url
+    if _presign_client is None or getattr(_presign_client, "_public_url", None) != public_url:
+        if not public_url:
+            raise ValueError(
+                "S3_PUBLIC_URL / S3_ENDPOINT_URL is not configured. "
+                "Set S3_PUBLIC_URL to a host the browser can reach "
+                "(e.g. http://localhost:4566)."
+            )
+        _presign_client = boto3.client(
+            "s3",
+            endpoint_url=public_url,
+            aws_access_key_id=settings.s3_access_key,
+            aws_secret_access_key=settings.s3_secret_key,
+            region_name="us-east-1",
+        )
+        _presign_client._public_url = public_url  # type: ignore[attr-defined]
+    return _presign_client
 
 
 def upload_image(b64_data: str, folder: str, filename: str | None = None) -> str:
@@ -47,8 +89,12 @@ def upload_image(b64_data: str, folder: str, filename: str | None = None) -> str
 
 
 def get_presigned_url(key: str, expires_seconds: int = 3600) -> str:
-    """Generate a pre-signed URL for temporary access to a stored image."""
-    client = _get_client()
+    """Generate a pre-signed URL for temporary access to a stored image.
+
+    Uses ``S3_PUBLIC_URL`` (browser-reachable) instead of ``S3_ENDPOINT_URL``
+    (Docker-internal) so the returned URL works from the admin dashboard.
+    """
+    client = _get_presign_client()
     return client.generate_presigned_url(
         "get_object",
         Params={"Bucket": settings.s3_bucket, "Key": key},

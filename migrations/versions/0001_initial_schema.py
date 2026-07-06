@@ -73,22 +73,7 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()")),
     )
 
-    op.create_table(
-        "professional_dossiers",
-        sa.Column("id", UUID(as_uuid=False), primary_key=True),
-        sa.Column("user_id", sa.String, nullable=False, unique=True, index=True),
-        sa.Column("professional_type", sa.String, nullable=False),
-        sa.Column("status", sa.String, server_default="pending"),
-        sa.Column("documents", JSONB, nullable=True),
-        sa.Column("metadata", JSONB, nullable=True),
-        sa.Column("rejection_reason", sa.Text, nullable=True),
-        sa.Column("submitted_at", sa.DateTime(timezone=True), server_default=sa.text("now()")),
-        sa.Column("reviewed_at", sa.DateTime(timezone=True), nullable=True),
-    )
-
-
 def downgrade() -> None:
-    op.drop_table("professional_dossiers")
     op.drop_table("review_queue")
     op.drop_table("webhook_deliveries")
     op.drop_table("verification_events")
