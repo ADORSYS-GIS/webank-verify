@@ -16,9 +16,15 @@ Identity verification microservice for Cameroon — Didit.me-style KYC engine bu
 - **Webhook delivery**: HMAC-SHA256 signed events to the BFF (kyc.level2.approved, etc.)
 - **Audit trail**: Full event log for every verification
 
-## Drop-in replacement for webank-kyc-manager
+## Relationship to webank-kyc-manager (deprecated)
 
-Implements the exact same API contract as `webank-mobile/bff/internal/kycmanager/client.go`. Point the BFF at this service via `KYC_MANAGER_BASE_URL`.
+webank-verify replaces the deprecated `webank-kyc-manager` service for identity
+verification (document OCR, liveness, biometric dedup). It is **not** a drop-in
+replacement — the BFF uses a separate `webankverify` client
+(`bff/internal/webankverify/client.go`) pointed at `WEBANK_VERIFY_BASE_URL`.
+
+OTP delivery is handled by a separate SMS gateway service
+(`fineract-adorsys-sms-gateway`) via `SMS_GATEWAY_BASE_URL`.
 
 ## Quick start
 
