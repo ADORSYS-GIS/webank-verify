@@ -1,0 +1,1 @@
+"""webank-verify application package."""
