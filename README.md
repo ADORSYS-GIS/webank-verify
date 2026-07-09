@@ -2,6 +2,8 @@
 
 Identity verification microservice for Cameroon — Didit.me-style KYC engine built on open-source ML.
 
+> CI builds and pushes Docker images to GHCR on every merge to `master` (tagged `:latest`) and `develop` (tagged `:develop`).
+
 ## What it does
 
 - **Document OCR**: Extract NOM, PRENOM, DOB, N°, expiry from Cameroonian CNI, récépissé and Passeport (easyocr, French)
