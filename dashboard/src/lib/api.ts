@@ -1,8 +1,8 @@
 import type { AdminStats, VerificationDetail, VerificationListItem, WebhookDelivery } from "./types";
 
-let ADMIN_TOKEN = localStorage.getItem("ADMIN_TOKEN") || import.meta.env.VITE_ADMIN_TOKEN;
-if (!ADMIN_TOKEN || ADMIN_TOKEN === "admin-secret-change-me") {
-  const t = prompt("Please enter the Admin Token (or leave blank for default):");
+let ADMIN_TOKEN = localStorage.getItem("ADMIN_TOKEN");
+if (!ADMIN_TOKEN) {
+  const t = prompt("Please enter the Admin Token:");
   if (t) {
     ADMIN_TOKEN = t;
     localStorage.setItem("ADMIN_TOKEN", t);
