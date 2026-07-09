@@ -17,6 +17,17 @@ _WINDOW_SECONDS = 60
 
 
 def _client_ip(request: Request) -> str:
+    # 1. Check X-Real-IP (set by ingress-nginx directly)
+    real_ip = request.headers.get("x-real-ip")
+    if real_ip:
+        return real_ip.strip()
+
+    # 2. Check X-Forwarded-For (can contain multiple proxies, the last one is the true client from ingress)
+    forwarded_for = request.headers.get("x-forwarded-for")
+    if forwarded_for:
+        return forwarded_for.split(",")[-1].strip()
+
+    # 3. Fallback for direct in-cluster callers (e.g. BFF)
     return request.client.host if request.client else "unknown"
 
 

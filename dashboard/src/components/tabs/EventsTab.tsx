@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
+import { headers } from "../../lib/api";
 
 const EVENT_ICONS: Record<string, string> = {
   document_submitted: "📄",
@@ -10,9 +11,7 @@ const EVENT_ICONS: Record<string, string> = {
 };
 
 async function fetchEvents(id: string) {
-  const res = await fetch(`/admin/verifications/${id}`, {
-    headers: { Authorization: `Bearer ${import.meta.env.VITE_ADMIN_TOKEN ?? "admin-secret-change-me"}` },
-  });
+  const res = await fetch(`/admin/verifications/${id}`, { headers });
   if (!res.ok) return [];
   const data = await res.json();
   return [] as Array<{ event: string; payload: Record<string, unknown>; created_at: string }>;
