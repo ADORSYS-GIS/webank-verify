@@ -1,9 +1,24 @@
 import type { AdminStats, VerificationDetail, VerificationListItem, WebhookDelivery } from "./types";
 
-const ADMIN_TOKEN = import.meta.env.VITE_ADMIN_TOKEN ?? "admin-secret-change-me";
+let ADMIN_TOKEN = localStorage.getItem("ADMIN_TOKEN");
+if (!ADMIN_TOKEN) {
+  const t = prompt("Please enter the Admin Token:");
+  if (t) {
+    ADMIN_TOKEN = t;
+    localStorage.setItem("ADMIN_TOKEN", t);
+  } else {
+    ADMIN_TOKEN = "admin-secret-change-me";
+  }
+}
+
+export function clearToken() {
+  localStorage.removeItem("ADMIN_TOKEN");
+  window.location.reload();
+}
+
 const BASE = "/admin";
 
-const headers = {
+export const headers = {
   "Content-Type": "application/json",
   Authorization: `Bearer ${ADMIN_TOKEN}`,
 };
@@ -20,12 +35,14 @@ export async function fetchVerifications(params?: {
   if (params?.country) q.set("country", params.country);
   if (params?.page) q.set("page", String(params.page));
   const res = await fetch(`${BASE}/verifications?${q}`, { headers });
+  if (res.status === 403) clearToken();
   if (!res.ok) throw new Error("Failed to fetch verifications");
   return res.json();
 }
 
 export async function fetchVerification(id: string): Promise<VerificationDetail> {
   const res = await fetch(`${BASE}/verifications/${id}`, { headers });
+  if (res.status === 403) clearToken();
   if (!res.ok) throw new Error("Verification not found");
   return res.json();
 }
@@ -36,6 +53,7 @@ export async function approveVerification(id: string, notes?: string): Promise<v
     headers,
     body: JSON.stringify({ notes }),
   });
+  if (res.status === 403) clearToken();
   if (!res.ok) {
     const error = await res.text().catch(() => "Unknown error");
     throw new Error(error || `Failed to approve (${res.status})`);
@@ -48,6 +66,7 @@ export async function rejectVerification(id: string, reason: string, fraud_flag 
     headers,
     body: JSON.stringify({ reason, fraud_flag }),
   });
+  if (res.status === 403) clearToken();
   if (!res.ok) {
     const error = await res.text().catch(() => "Unknown error");
     throw new Error(error || `Failed to reject (${res.status})`);
@@ -56,6 +75,7 @@ export async function rejectVerification(id: string, reason: string, fraud_flag 
 
 export async function fetchFrames(id: string): Promise<string[]> {
   const res = await fetch(`${BASE}/verifications/${id}/frames`, { headers });
+  if (res.status === 403) clearToken();
   if (!res.ok) return [];
   const data = await res.json();
   return data.urls ?? [];
@@ -63,12 +83,14 @@ export async function fetchFrames(id: string): Promise<string[]> {
 
 export async function fetchStats(): Promise<AdminStats> {
   const res = await fetch(`${BASE}/stats`, { headers });
+  if (res.status === 403) clearToken();
   if (!res.ok) throw new Error("Failed to fetch stats");
   return res.json();
 }
 
 export async function fetchWebhooks(id: string): Promise<WebhookDelivery[]> {
   const res = await fetch(`${BASE}/webhooks/${id}`, { headers });
+  if (res.status === 403) clearToken();
   if (!res.ok) return [];
   return res.json();
 }
@@ -78,6 +100,7 @@ export async function resendWebhook(id: string): Promise<void> {
     method: "POST",
     headers,
   });
+  if (res.status === 403) clearToken();
   if (!res.ok) {
     const error = await res.text().catch(() => "Unknown error");
     throw new Error(error || `Failed to resend webhook (${res.status})`);
@@ -105,6 +128,7 @@ export async function createVerification(data: {
     },
     body: formData,
   });
+  if (res.status === 403) clearToken();
   if (!res.ok) {
     const error = await res.text();
     throw new Error(error || "Failed to create verification");

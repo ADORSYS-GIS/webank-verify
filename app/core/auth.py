@@ -1,4 +1,5 @@
 import hmac
+import ipaddress
 
 from fastapi import Header, HTTPException, Request, Security, status
 from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
@@ -16,8 +17,32 @@ _MAX_FAILURES = 10
 _WINDOW_SECONDS = 60
 
 
+def _is_trusted_proxy(ip_str: str) -> bool:
+    try:
+        ip = ipaddress.ip_address(ip_str)
+        return ip.is_private or ip.is_loopback
+    except ValueError:
+        return False
+
 def _client_ip(request: Request) -> str:
-    return request.client.host if request.client else "unknown"
+    client_ip = request.client.host if request.client else "unknown"
+    
+    # Only trust proxy headers if the request comes from a trusted proxy (e.g., ingress-nginx)
+    if not _is_trusted_proxy(client_ip):
+        return client_ip
+
+    # 1. Check X-Real-IP (set by ingress-nginx directly)
+    real_ip = request.headers.get("x-real-ip")
+    if real_ip:
+        return real_ip.strip()
+
+    # 2. Check X-Forwarded-For (leftmost is the true client)
+    forwarded_for = request.headers.get("x-forwarded-for")
+    if forwarded_for:
+        return forwarded_for.split(",")[0].strip()
+
+    # 3. Fallback for direct in-cluster callers (e.g. BFF)
+    return client_ip
 
 
 async def _reject_if_locked(request: Request, scope: str) -> None:
