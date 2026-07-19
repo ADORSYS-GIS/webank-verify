@@ -28,7 +28,7 @@ async def submit_document(
     verification = await create_document_verification(
         db=db,
         user_id=body.user_id,
-        images=body.images,
+        image_uris=body.image_uris,
         doc_type_input=body.doc_type,
         client_ip=client_ip,
         user_agent=user_agent,

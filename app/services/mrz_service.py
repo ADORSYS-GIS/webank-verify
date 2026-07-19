@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import base64
 import re
 from dataclasses import dataclass
 
@@ -62,12 +61,11 @@ def _decode_date(raw: str) -> str | None:
     return f"{dd}/{mm}/{year}"
 
 
-def _extract_mrz_from_image(img_b64: str) -> str | None:
+def _extract_mrz_from_image(image_bytes: bytes) -> str | None:
     """Try to detect and extract MRZ text from a passport image using OpenCV + easyocr."""
     import cv2  # noqa: PLC0415
 
-    data = base64.b64decode(img_b64)
-    arr = np.frombuffer(data, dtype=np.uint8)
+    arr = np.frombuffer(image_bytes, dtype=np.uint8)
     img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
     if img is None:
         return None
@@ -130,9 +128,9 @@ def _parse_td3(line1: str, line2: str) -> MRZFields:
     return fields
 
 
-def extract_from_passport(img_b64: str) -> MRZFields | None:
+def extract_from_passport(image_bytes: bytes) -> MRZFields | None:
     """Extract MRZ fields from a passport image. Returns None if no MRZ detected."""
-    raw_mrz = _extract_mrz_from_image(img_b64)
+    raw_mrz = _extract_mrz_from_image(image_bytes)
     if raw_mrz is None:
         return None
 

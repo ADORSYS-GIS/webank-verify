@@ -1,6 +1,5 @@
 """Tests for liveness detection service."""
 
-import base64
 import io
 
 import numpy as np
@@ -15,11 +14,11 @@ from app.services.liveness_service import (
 )
 
 
-def _make_frame_b64(width: int = 200, height: int = 200, color: tuple = (128, 128, 128)) -> str:
-    """Create a synthetic JPEG frame in base64."""
+def _make_frame_bytes(width: int = 200, height: int = 200, color: tuple = (128, 128, 128)) -> bytes:
+    """Create a synthetic JPEG frame."""
     buf = io.BytesIO()
     Image.new("RGB", (width, height), color=color).save(buf, format="JPEG")
-    return base64.b64encode(buf.getvalue()).decode()
+    return buf.getvalue()
 
 
 def test_empty_frames_returns_zero_score():
@@ -29,14 +28,14 @@ def test_empty_frames_returns_zero_score():
 
 
 def test_single_frame_analyzed():
-    frame = _make_frame_b64()
+    frame = _make_frame_bytes()
     result = analyze_frames([frame])
     assert result.frames_analyzed == 1
     assert 0.0 <= result.liveness_score <= 100.0
 
 
 def test_multiple_frames_analyzed():
-    frames = [_make_frame_b64(color=(c, c, c)) for c in (100, 110, 120)]
+    frames = [_make_frame_bytes(color=(c, c, c)) for c in (100, 110, 120)]
     result = analyze_frames(frames)
     assert result.frames_analyzed == 3
 

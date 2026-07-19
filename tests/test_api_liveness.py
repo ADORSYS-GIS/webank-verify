@@ -18,7 +18,7 @@ async def test_verify_liveness_409_no_document():
     db = AsyncMock()
     db.execute.return_value = MockResult(None)
     
-    body = LivenessVerifyRequest(user_id="user123", frames=["f1"])
+    body = LivenessVerifyRequest(user_id="user123", frame_uris=["s3://webank-verify/kyc/user123/f1.jpg"])
     request = MagicMock(spec=Request)
     request.client.host = "1.2.3.4"
 
@@ -34,7 +34,7 @@ async def test_verify_liveness_409_already_processed():
     doc_v = Verification(id="v1", user_id="user123", status="approved")
     db.execute.return_value = MockResult(doc_v)
     
-    body = LivenessVerifyRequest(user_id="user123", frames=["f1"])
+    body = LivenessVerifyRequest(user_id="user123", frame_uris=["s3://webank-verify/kyc/user123/f1.jpg"])
     request = MagicMock(spec=Request)
     
     with pytest.raises(HTTPException) as exc:
@@ -49,7 +49,7 @@ async def test_verify_liveness_idempotent():
     doc_v = Verification(id="v1", user_id="user123", status="pending", liveness_metrics={"score": 85})
     db.execute.return_value = MockResult(doc_v)
     
-    body = LivenessVerifyRequest(user_id="user123", frames=["f1"])
+    body = LivenessVerifyRequest(user_id="user123", frame_uris=["s3://webank-verify/kyc/user123/f1.jpg"])
     request = MagicMock(spec=Request)
     
     resp = await verify_liveness(body=body, request=request, _="key", db=db)
@@ -74,7 +74,7 @@ async def test_verify_liveness_auto_fire_webhook(
     # First execute is for Verification, second is for ReviewQueue
     db.execute.return_value = MockResult([doc_v, ReviewQueue(verification_id="v1")])
     
-    mock_run.return_value = (LivenessResult(liveness_score=90, frames_analyzed=1), ["key1"])
+    mock_run.return_value = (LivenessResult(liveness_score=90, frames_analyzed=1), ["key1"], [b"frame"])
     mock_compute_risk.return_value = MagicMock(decision="approved", overall_score=95, warnings=[])
     mock_assign_person_id.return_value = "person123"
     mock_build_payload.return_value = (
@@ -82,7 +82,7 @@ async def test_verify_liveness_auto_fire_webhook(
         {"user_id": "user123", "verification_id": "v1", "person_id": "person123"},
     )
 
-    body = LivenessVerifyRequest(user_id="user123", frames=["f1"])
+    body = LivenessVerifyRequest(user_id="user123", frame_uris=["s3://webank-verify/kyc/user123/f1.jpg"])
     request = MagicMock(spec=Request)
     
     resp = await verify_liveness(body=body, request=request, _="key", db=db)

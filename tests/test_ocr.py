@@ -49,14 +49,14 @@ def test_extract_cni_basic(mock_decode, mock_reader):
         ]
     )
 
-    # Create a tiny 1x1 white JPEG in base64
-    import base64, io
+    # Create a tiny 1x1 white JPEG.
+    import io
     from PIL import Image
     buf = io.BytesIO()
     Image.new("RGB", (1, 1), color=(255, 255, 255)).save(buf, format="JPEG")
-    b64 = base64.b64encode(buf.getvalue()).decode()
+    image_bytes = buf.getvalue()
 
-    fields = extract_from_cni(b64)
+    fields = extract_from_cni(image_bytes)
 
     assert fields.last_name == "Mbida"
     assert fields.first_name == "Jean Paul"
@@ -77,13 +77,13 @@ def test_expired_document(mock_decode, mock_reader):
         ]
     )
 
-    import base64, io
+    import io
     from PIL import Image
     buf = io.BytesIO()
     Image.new("RGB", (1, 1)).save(buf, format="JPEG")
-    b64 = base64.b64encode(buf.getvalue()).decode()
+    image_bytes = buf.getvalue()
 
-    fields = extract_from_cni(b64)
+    fields = extract_from_cni(image_bytes)
     assert fields.is_expired is True
 
 
@@ -99,12 +99,12 @@ def test_underage_detection(mock_decode, mock_reader):
         ]
     )
 
-    import base64, io
+    import io
     from PIL import Image
     buf = io.BytesIO()
     Image.new("RGB", (1, 1)).save(buf, format="JPEG")
-    b64 = base64.b64encode(buf.getvalue()).decode()
+    image_bytes = buf.getvalue()
 
-    fields = extract_from_cni(b64)
+    fields = extract_from_cni(image_bytes)
     assert fields.is_underage is True
     assert fields.age is not None and fields.age < 18

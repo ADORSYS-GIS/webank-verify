@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import base64
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -30,10 +29,9 @@ class LivenessResult:
     LIVENESS_THRESHOLD: float = 60.0  # minimum score to pass
 
 
-def _decode_frame(b64: str) -> np.ndarray:
+def _decode_frame(data: bytes) -> np.ndarray:
     import cv2  # noqa: PLC0415
 
-    data = base64.b64decode(b64)
     arr = np.frombuffer(data, dtype=np.uint8)
     img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
     if img is None:
@@ -139,19 +137,19 @@ def _analyze_frame(img: np.ndarray) -> FrameMetrics:
     return metrics
 
 
-def analyze_frames(frames_b64: list[str]) -> LivenessResult:
+def analyze_frames(frame_bytes: list[bytes]) -> LivenessResult:
     """
-    Analyze a list of base64-encoded frames for passive liveness.
+    Analyze a list of image frames for passive liveness.
     Combines LBP texture, inter-frame motion, and per-frame quality metrics.
     """
-    if not frames_b64:
+    if not frame_bytes:
         return LivenessResult()
 
     decoded = []
-    original_indices = []  # map decoded[i] back to its index in frames_b64
-    for orig_idx, b64 in enumerate(frames_b64):
+    original_indices = []  # map decoded[i] back to its index in frame_bytes
+    for orig_idx, data in enumerate(frame_bytes):
         try:
-            decoded.append(_decode_frame(b64))
+            decoded.append(_decode_frame(data))
             original_indices.append(orig_idx)
         except ValueError:
             continue

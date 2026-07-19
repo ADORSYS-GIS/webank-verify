@@ -52,43 +52,38 @@ def _mrz_to_fields(mrz: mrz_service.MRZFields, doc_type: str) -> DocumentFields:
 
 
 def process_document_images(
-    verification_id: str,
-    images: list[str],
+    image_uris: list[str],
     doc_type: str,
     doc_type_input: str,
 ) -> tuple[DocumentFields, list[float] | None, list[str]]:
-    """CPU-bound pipeline (OCR/MRZ + face embedding + S3 upload).
+    """CPU-bound pipeline (S3 fetch + OCR/MRZ + face embedding).
 
     Runs in a worker thread so it never blocks the event loop.
     Returns (DocumentFields, embedding, image_keys).
     """
-    front_b64 = images[0]
-    back_b64 = images[1] if len(images) > 1 else None
+    image_bytes = [storage_service.fetch_bytes(uri) for uri in image_uris]
+    front_bytes = image_bytes[0]
+    back_bytes = image_bytes[1] if len(image_bytes) > 1 else None
+    image_keys = [storage_service.parse_s3_uri(uri)[1] for uri in image_uris]
 
     doc_fields: DocumentFields | None = None
     if doc_type_input == "passport":
-        mrz = mrz_service.extract_from_passport(front_b64)
+        mrz = mrz_service.extract_from_passport(front_bytes)
         if mrz:
             doc_fields = _mrz_to_fields(mrz, doc_type)
     if doc_fields is None:
         # CNI, or passport whose MRZ could not be read — fall back to OCR.
-        doc_fields = ocr_service.extract_from_cni(front_b64, back_b64, doc_type)
+        doc_fields = ocr_service.extract_from_cni(front_bytes, back_bytes, doc_type)
 
-    embedding = face_service.extract_embedding(front_b64)
+    embedding = face_service.extract_embedding(front_bytes)
 
-    img_keys = []
-    for i, img_b64 in enumerate(images):
-        img_keys.append(
-            storage_service.upload_image(img_b64, f"documents/{verification_id}", f"page_{i}")
-        )
-
-    return doc_fields, embedding, img_keys
+    return doc_fields, embedding, image_keys
 
 
 async def create_document_verification(
     db: AsyncSession,
     user_id: str,
-    images: list[str],
+    image_uris: list[str],
     doc_type_input: str,
     client_ip: str | None = None,
     user_agent: str | None = None,
@@ -102,7 +97,7 @@ async def create_document_verification(
     Args:
         db: Database session
         user_id: User ID for the verification
-        images: List of base64-encoded images (front required, back optional)
+        image_uris: List of S3 image URIs (front required, back optional)
         doc_type_input: Document type ('national_id', 'recepisse', or 'passport')
         client_ip: Optional client IP for IP intelligence
         user_agent: Optional user agent string
@@ -182,9 +177,9 @@ async def create_document_verification(
     # Import here to avoid circular dependency
     from fastapi.concurrency import run_in_threadpool
 
-    # Heavy OCR/face/upload work, off the event loop.
+    # Heavy S3 fetch/OCR/face work, off the event loop.
     doc_fields, embedding, img_keys = await run_in_threadpool(
-        process_document_images, verification_id, images, doc_type, doc_type_input
+        process_document_images, image_uris, doc_type, doc_type_input
     )
 
     # IP intelligence (async, network-bound).

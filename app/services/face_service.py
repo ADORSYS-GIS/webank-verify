@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import base64
 import tempfile
 import uuid
 from dataclasses import dataclass
@@ -37,9 +36,8 @@ class FaceMatchResult:
     face_found_in_selfie: bool = True
 
 
-def _b64_to_temp_file(b64: str) -> str:
-    """Write base64 image to a temp file and return path (deepface needs file paths)."""
-    data = base64.b64decode(b64)
+def _bytes_to_temp_file(data: bytes) -> str:
+    """Write image bytes to a temp file and return path (deepface needs file paths)."""
     with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as f:
         f.write(data)
         return f.name
@@ -54,10 +52,9 @@ def _safe_unlink(path: str | None) -> None:
         pass
 
 
-def _b64_to_numpy(b64: str) -> np.ndarray:
+def _bytes_to_numpy(data: bytes) -> np.ndarray:
     import cv2  # noqa: PLC0415
 
-    data = base64.b64decode(b64)
     arr = np.frombuffer(data, dtype=np.uint8)
     img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
     if img is None:
@@ -65,12 +62,12 @@ def _b64_to_numpy(b64: str) -> np.ndarray:
     return img
 
 
-def extract_embedding(img_b64: str) -> list[float] | None:
+def extract_embedding(image_bytes: bytes) -> list[float] | None:
     """Extract ArcFace embedding from an image. Returns None if no face detected."""
     path = None
     try:
         df = _load_deepface()
-        path = _b64_to_temp_file(img_b64)
+        path = _bytes_to_temp_file(image_bytes)
         result = df.represent(img_path=path, model_name="ArcFace", enforce_detection=True)
         if result:
             return result[0]["embedding"]
@@ -91,14 +88,14 @@ def _cosine_similarity(a: list[float], b: list[float]) -> float:
     return float(dot / norm)
 
 
-def compare_faces(id_img_b64: str, selfie_b64: str) -> FaceMatchResult:
+def compare_faces(id_image_bytes: bytes, selfie_image_bytes: bytes) -> FaceMatchResult:
     """Compare face from ID document with selfie. Returns similarity and pass/fail."""
     id_path = None
     selfie_path = None
     try:
         df = _load_deepface()
-        id_path = _b64_to_temp_file(id_img_b64)
-        selfie_path = _b64_to_temp_file(selfie_b64)
+        id_path = _bytes_to_temp_file(id_image_bytes)
+        selfie_path = _bytes_to_temp_file(selfie_image_bytes)
 
         result = df.verify(
             img1_path=id_path,
@@ -132,7 +129,7 @@ def compare_faces(id_img_b64: str, selfie_b64: str) -> FaceMatchResult:
 
 
 def match_against_embedding(
-    selfie_b64: str, stored_embedding: list[float] | None
+    selfie_image_bytes: bytes, stored_embedding: list[float] | None
 ) -> FaceMatchResult | None:
     """Compare a selfie against a previously stored face embedding.
 
@@ -141,7 +138,7 @@ def match_against_embedding(
     """
     if not stored_embedding:
         return None
-    selfie_emb = extract_embedding(selfie_b64)
+    selfie_emb = extract_embedding(selfie_image_bytes)
     if not selfie_emb:
         return FaceMatchResult(
             similarity=0.0,
