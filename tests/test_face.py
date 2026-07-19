@@ -53,14 +53,14 @@ def test_face_match_result_structure():
 
 
 def test_match_against_embedding_none_when_no_stored():
-    assert match_against_embedding("anything", None) is None
-    assert match_against_embedding("anything", []) is None
+    assert match_against_embedding(b"anything", None) is None
+    assert match_against_embedding(b"anything", []) is None
 
 
 @patch("app.services.face_service.extract_embedding")
 def test_match_against_embedding_pass(mock_extract):
     mock_extract.return_value = [1.0, 0.0, 0.0]
-    result = match_against_embedding("selfie_b64", [1.0, 0.0, 0.0])
+    result = match_against_embedding(b"selfie", [1.0, 0.0, 0.0])
     assert result is not None
     assert result.passed is True  # identical → cosine distance 0
     assert result.similarity > 99.0
@@ -69,14 +69,14 @@ def test_match_against_embedding_pass(mock_extract):
 @patch("app.services.face_service.extract_embedding")
 def test_match_against_embedding_fail(mock_extract):
     mock_extract.return_value = [0.0, 1.0, 0.0]
-    result = match_against_embedding("selfie_b64", [1.0, 0.0, 0.0])
+    result = match_against_embedding(b"selfie", [1.0, 0.0, 0.0])
     assert result is not None
     assert result.passed is False  # orthogonal → distance 1.0
 
 
 @patch("app.services.face_service.extract_embedding", return_value=None)
 def test_match_against_embedding_no_face(mock_extract):
-    result = match_against_embedding("selfie_b64", [1.0, 0.0, 0.0])
+    result = match_against_embedding(b"selfie", [1.0, 0.0, 0.0])
     assert result is not None
     assert result.passed is False
     assert result.face_found_in_selfie is False
@@ -86,9 +86,9 @@ def test_match_against_embedding_no_face(mock_extract):
 def test_compare_faces_pass(mock_deepface):
     """Test that low distance → passed=True."""
     mock_deepface.verify.return_value = {"distance": 0.30, "verified": True}
-    with patch("app.services.face_service._b64_to_temp_file", return_value="/tmp/fake.jpg"):
+    with patch("app.services.face_service._bytes_to_temp_file", return_value="/tmp/fake.jpg"):
         from app.services.face_service import compare_faces
-        result = compare_faces("fake_id_b64", "fake_selfie_b64")
+        result = compare_faces(b"fake_id", b"fake_selfie")
         assert result.passed is True
         assert result.similarity > 0
 
@@ -97,7 +97,7 @@ def test_compare_faces_pass(mock_deepface):
 def test_compare_faces_fail(mock_deepface):
     """Test that high distance → passed=False."""
     mock_deepface.verify.return_value = {"distance": 0.90, "verified": False}
-    with patch("app.services.face_service._b64_to_temp_file", return_value="/tmp/fake.jpg"):
+    with patch("app.services.face_service._bytes_to_temp_file", return_value="/tmp/fake.jpg"):
         from app.services.face_service import compare_faces
-        result = compare_faces("fake_id_b64", "fake_selfie_b64")
+        result = compare_faces(b"fake_id", b"fake_selfie")
         assert result.passed is False

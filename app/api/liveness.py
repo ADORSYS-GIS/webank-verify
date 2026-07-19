@@ -28,20 +28,16 @@ from app.services import (
     webhook_service,
 )
 from app.services.ocr_service import DocumentFields
+from app.services.storage_service import StorageFetchError
 
 router = APIRouter()
 
 
-def _process_liveness(verification_id: str, frames: list[str]):
-    """CPU-bound liveness analysis + frame upload, off the event loop."""
-    liveness_result = liveness_service.analyze_frames(frames)
-    frame_keys = [
-        storage_service.upload_image(
-            frame_b64, f"verifications/{verification_id}/liveness", f"frame_{i}"
-        )
-        for i, frame_b64 in enumerate(frames)
-    ]
-    return liveness_result, frame_keys
+def _process_liveness(frame_uris: list[str]):
+    """CPU-bound S3 fetch and liveness analysis, off the event loop."""
+    frame_bytes = [storage_service.fetch_bytes(uri) for uri in frame_uris]
+    frame_keys = [storage_service.parse_s3_uri(uri)[1] for uri in frame_uris]
+    return liveness_service.analyze_frames(frame_bytes), frame_keys, frame_bytes
 
 
 @router.post("/liveness/verify", response_model=LivenessResponse)
@@ -57,7 +53,7 @@ async def verify_liveness(
     # to prevent race conditions from concurrent liveness submissions.
     #
     # Tradeoff: the FOR UPDATE lock is held across CPU-bound liveness analysis
-    # and S3 uploads (multiple seconds per request). At MVP traffic this is
+    # and S3 fetches (multiple seconds per request). At MVP traffic this is
     # acceptable — concurrent submissions for the same user are rare. Under
     # load, split into two short transactions (lock+mark → heavy work →
     # re-lock+write) to avoid connection pile-up.
@@ -92,15 +88,21 @@ async def verify_liveness(
             score=doc_verification.liveness_metrics.get("score", 0),
         )
 
-    # Heavy liveness analysis + S3 upload, off the event loop.
-    liveness_result, frame_keys = await run_in_threadpool(
-        _process_liveness, doc_verification.id, body.frames
-    )
+    # Heavy S3 fetch and liveness analysis, off the event loop.
+    try:
+        liveness_result, frame_keys, frame_bytes = await run_in_threadpool(
+            _process_liveness, body.frame_uris
+        )
+    except (StorageFetchError, ValueError) as exc:
+        raise HTTPException(
+            status_code=422,
+            detail="Unable to retrieve submitted liveness frame from storage",
+        ) from exc
 
     # Face match: sharpest selfie frame vs the stored ID face embedding.
     face_match_result = None
-    if doc_verification.face_embedding and body.frames:
-        best_frame = body.frames[liveness_result.best_frame_index]
+    if doc_verification.face_embedding and frame_bytes:
+        best_frame = frame_bytes[liveness_result.best_frame_index]
         face_match_result = await run_in_threadpool(
             face_service.match_against_embedding,
             best_frame,

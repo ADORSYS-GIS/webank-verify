@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import base64
 import logging
+import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import operator_identity, require_admin
 from app.core.db import get_db
+from app.core.config import settings
 from app.models.db import Verification, VerificationEvent, WebhookDelivery
 from app.models.request import AdminApproveRequest, AdminRejectRequest
 from app.models.response import (
@@ -460,11 +461,8 @@ async def create_verification(
             detail="front_image content does not match claimed MIME type",
         )
 
-    # Convert front image to base64
-    front_b64 = base64.b64encode(front_content).decode("utf-8")
-
     # Process back image if provided
-    images = [front_b64]
+    image_contents = [(front_content, front_image.content_type)]
     # Check if back_image actually has content
     if back_image and getattr(back_image, "size", 0) > 0:
         # Validate MIME type for back image
@@ -487,21 +485,34 @@ async def create_verification(
                 detail="back_image content does not match claimed MIME type",
             )
 
-        back_b64 = base64.b64encode(back_content).decode("utf-8")
-        images.append(back_b64)
+        image_contents.append((back_content, back_image.content_type))
 
     # Map document type to the expected input format
     # The document_service expects 'national_id' for CNI and 'passport' for PASSPORT
     doc_type_input = "passport" if doc_type_upper == "PASSPORT" else "national_id"
 
+    # Store the operator-uploaded images, then use the same S3 URI processing
+    # path as the BFF flow. This keeps documents visible in the admin dossier.
+    verification_id = str(uuid.uuid4())
+    image_uris = []
+    for index, (content, content_type) in enumerate(image_contents):
+        key = storage_service.upload_bytes(
+            content,
+            f"documents/{verification_id}",
+            f"page_{index}",
+            content_type or "image/jpeg",
+        )
+        image_uris.append(f"s3://{settings.s3_bucket}/{key}")
+
     # Create verification using shared service
     verification = await create_document_verification(
         db=db,
         user_id=user_id,
-        images=images,
+        image_uris=image_uris,
         doc_type_input=doc_type_input,
         client_ip=None,  # Admin-initiated, no client IP
         user_agent=f"admin/{operator}",
+        verification_id=verification_id,
         operator=operator,
     )
 

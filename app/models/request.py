@@ -3,7 +3,7 @@ from pydantic import BaseModel, Field
 
 class DocumentSubmitRequest(BaseModel):
     user_id: str
-    images: list[str] = Field(..., min_length=1, description="Base64-encoded images (front required, back optional)")
+    image_uris: list[str] = Field(..., min_length=1, description="S3 image URIs (front required, back optional)")
     doc_type: str = Field(..., description="'national_id', 'recepisse', or 'passport'")
     client_ip: str | None = None
     user_agent: str | None = None
@@ -11,7 +11,7 @@ class DocumentSubmitRequest(BaseModel):
 
 class LivenessVerifyRequest(BaseModel):
     user_id: str
-    frames: list[str] = Field(..., min_length=1, description="Base64-encoded JPEG frames")
+    frame_uris: list[str] = Field(..., min_length=1, description="S3 JPEG frame URIs")
     context: str = Field(default="kyc", description="'kyc' or 'recovery'")
     client_ip: str | None = None
     user_agent: str | None = None
