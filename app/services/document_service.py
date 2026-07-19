@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.redis import get_redis
 from app.models.db import ReviewQueue, Verification, VerificationEvent
 from app.services import face_service, ip_service, mrz_service, ocr_service, risk_service, storage_service
+from app.services.inference_executor import run_inference
 from app.services.ocr_service import DocumentFields, _compute_age, _parse_date
 
 if TYPE_CHECKING:
@@ -78,6 +79,225 @@ def process_document_images(
     embedding = face_service.extract_embedding(front_bytes)
 
     return doc_fields, embedding, image_keys
+
+
+async def enqueue_document_verification(
+    db: AsyncSession,
+    user_id: str,
+    doc_type_input: str,
+    client_ip: str | None = None,
+    user_agent: str | None = None,
+    operator: str | None = None,
+) -> tuple[Verification, bool]:
+    """Create a durable processing row without running inference.
+
+    The Redis lock only protects the short create-or-lookup transaction.  The
+    row's ``processing`` status is the durable idempotency marker once the
+    request has returned 202.
+    """
+    verification_id = str(uuid.uuid4())
+    if operator:
+        verification = Verification(
+            id=verification_id,
+            user_id=user_id,
+            type="document",
+            status="processing",
+            doc_type=DOC_TYPE_MAP.get(doc_type_input, "CNI"),
+            device_info={"user_agent": user_agent, "ip": client_ip},
+        )
+        db.add(verification)
+        db.add(
+            VerificationEvent(
+                verification_id=verification_id,
+                event="document_queued",
+                payload={"doc_type": verification.doc_type, "source": "admin_create", "operator": operator},
+            )
+        )
+        return verification, True
+
+    redis = get_redis()
+    lock_key = _DOC_SUBMIT_LOCK_PREFIX + user_id
+    acquired = await redis.set(lock_key, verification_id, nx=True, ex=_DOC_SUBMIT_LOCK_TTL)
+    if not acquired:
+        existing = (
+            await db.execute(
+                select(Verification)
+                .where(
+                    Verification.user_id == user_id,
+                    Verification.type == "document",
+                    Verification.status.in_(["processing", "pending", "manual_review"]),
+                )
+                .order_by(Verification.created_at.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if existing is not None:
+            return existing, False
+        # The lock holder may still be committing.  Return its known ID rather
+        # than making this request wait for OCR or poll Redis for minutes.
+        queued_id = await redis.get(lock_key)
+        if isinstance(queued_id, bytes):
+            queued_id = queued_id.decode()
+        return Verification(
+            id=str(queued_id or verification_id),
+            user_id=user_id,
+            type="document",
+            status="processing",
+        ), False
+
+    existing = (
+        await db.execute(
+            select(Verification)
+            .where(
+                Verification.user_id == user_id,
+                Verification.type == "document",
+                Verification.status.in_(["processing", "pending", "manual_review"]),
+            )
+            .order_by(Verification.created_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        await redis.delete(lock_key)
+        return existing, False
+
+    verification = Verification(
+        id=verification_id,
+        user_id=user_id,
+        type="document",
+        status="processing",
+        doc_type=DOC_TYPE_MAP.get(doc_type_input, "CNI"),
+        device_info={"user_agent": user_agent, "ip": client_ip},
+    )
+    db.add(verification)
+    db.add(
+        VerificationEvent(
+            verification_id=verification_id,
+            event="document_queued",
+            payload={"doc_type": verification.doc_type, "source": "user_submission"},
+        )
+    )
+    return verification, True
+
+
+async def release_document_submission_lock(user_id: str) -> None:
+    """Release the short enqueue mutex after the processing row is committed."""
+    await get_redis().delete(_DOC_SUBMIT_LOCK_PREFIX + user_id)
+
+
+async def complete_document_verification(
+    db: AsyncSession,
+    verification: Verification,
+    image_uris: list[str],
+    doc_type_input: str,
+    client_ip: str | None = None,
+    user_agent: str | None = None,
+    pipeline_result: tuple[DocumentFields, list[float] | None, list[str]] | None = None,
+) -> Verification:
+    """Run document inference and populate a previously queued verification."""
+    doc_type = verification.doc_type or DOC_TYPE_MAP.get(doc_type_input, "CNI")
+    if pipeline_result is None:
+        pipeline_result = await run_inference(
+            process_document_images, image_uris, doc_type, doc_type_input
+        )
+    doc_fields, embedding, img_keys = pipeline_result
+    ip_analysis: IPAnalysisResult | None = (
+        await ip_service.analyze_ip(client_ip) if client_ip else None
+    )
+
+    duplicate_user_ids: list[str] = []
+    if embedding:
+        rows = (
+            await db.execute(
+                select(Verification.user_id, Verification.face_embedding).where(
+                    Verification.type == "document",
+                    Verification.status == "approved",
+                    Verification.user_id != verification.user_id,
+                    Verification.face_embedding.isnot(None),
+                )
+            )
+        ).all()
+        duplicate_user_ids = await run_inference(
+            face_service.check_duplicate,
+            embedding,
+            [(uid, existing_embedding) for uid, existing_embedding in rows if existing_embedding],
+        )
+
+    risk: RiskResult = risk_service.compute_risk(
+        liveness=None,
+        face_match=None,
+        document=doc_fields,
+        ip=ip_analysis,
+        duplicate_user_ids=duplicate_user_ids or None,
+    )
+    warnings_payload = [
+        {"code": warning.code, "message": warning.message, "severity": warning.severity}
+        for warning in risk.warnings
+    ]
+    has_critical = any(warning["severity"] == "critical" for warning in warnings_payload)
+    ip_payload = None
+    if ip_analysis:
+        ip_payload = {
+            "ip": ip_analysis.ip,
+            "country": ip_analysis.country,
+            "country_name": ip_analysis.country_name,
+            "city": ip_analysis.city,
+            "isp": ip_analysis.isp,
+            "is_vpn": ip_analysis.is_vpn,
+            "is_proxy": ip_analysis.is_proxy,
+            "is_tor": ip_analysis.is_tor,
+            "risk_score": ip_analysis.risk_score,
+            "risk_flags": ip_analysis.risk_flags,
+        }
+
+    verification.doc_type = doc_type
+    verification.status = "pending"
+    verification.document_fields = {
+        "type": doc_fields.type,
+        "first_name": doc_fields.first_name,
+        "last_name": doc_fields.last_name,
+        "date_of_birth": doc_fields.date_of_birth,
+        "birth_place": doc_fields.birth_place,
+        "document_number": doc_fields.document_number,
+        "expiry_date": doc_fields.expiry_date,
+        "issue_date": doc_fields.issue_date,
+        "is_expired": doc_fields.is_expired,
+        "age": doc_fields.age,
+        "is_underage": doc_fields.is_underage,
+        "sex": doc_fields.sex,
+        "height": doc_fields.height,
+        "profession": doc_fields.profession,
+        "father": doc_fields.father,
+        "mother": doc_fields.mother,
+        "confidence": doc_fields.confidence,
+        "image_keys": img_keys,
+    }
+    verification.face_embedding = embedding
+    verification.ip_analysis = ip_payload
+    verification.warnings = warnings_payload
+    verification.device_info = {"user_agent": user_agent, "ip": client_ip}
+    db.add(
+        ReviewQueue(
+            id=str(uuid.uuid4()),
+            verification_id=verification.id,
+            user_id=verification.user_id,
+            type="document",
+            priority=1 if has_critical else 0,
+        )
+    )
+    db.add(
+        VerificationEvent(
+            verification_id=verification.id,
+            event="document_submitted",
+            payload={
+                "doc_type": doc_type,
+                "ocr_confidence": doc_fields.confidence,
+                "duplicate_user_ids": duplicate_user_ids,
+                "source": "user_submission",
+            },
+        )
+    )
+    return verification
 
 
 async def create_document_verification(
@@ -174,11 +394,8 @@ async def create_document_verification(
             await redis.delete(lock_key)
             return existing
 
-    # Import here to avoid circular dependency
-    from fastapi.concurrency import run_in_threadpool
-
     # Heavy S3 fetch/OCR/face work, off the event loop.
-    doc_fields, embedding, img_keys = await run_in_threadpool(
+    doc_fields, embedding, img_keys = await run_inference(
         process_document_images, image_uris, doc_type, doc_type_input
     )
 

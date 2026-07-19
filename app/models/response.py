@@ -5,15 +5,9 @@ from pydantic import BaseModel
 
 # ── BFF contract responses (must match kycmanager/client.go exactly) ──────────
 
-class DocSubmitResponse(BaseModel):
-    submission_id: str
-    status: str  # "pending" | "in_review"
-
-
-class LivenessResponse(BaseModel):
-    check_id: str
-    status: str  # "pending" | "passed" | "failed"
-    score: int
+class AcceptedVerificationResponse(BaseModel):
+    verification_id: str
+    status: str = "processing"
 
 
 class IdentityResponse(BaseModel):

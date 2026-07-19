@@ -44,6 +44,9 @@ class Settings(BaseSettings):
     port: int = 8070
     log_level: str = "INFO"
     environment: str = "development"
+    # Keep ML execution deliberately narrow: each worker loads torch/TensorFlow
+    # once and runs one CPU-heavy verification at a time off the event loop.
+    inference_workers: int = 1
 
     @property
     def is_dev(self) -> bool:

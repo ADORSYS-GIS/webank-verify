@@ -23,7 +23,8 @@ from app.models.response import (
     WebhookDelivery as WebhookDeliveryResponse,
 )
 from app.services import person_service, storage_service, webhook_service
-from app.services.document_service import create_document_verification
+from app.services.document_service import enqueue_document_verification
+from app.services.verification_jobs import enqueue_document_processing
 
 router = APIRouter(prefix="/admin", dependencies=[Depends(require_admin)])
 
@@ -504,19 +505,25 @@ async def create_verification(
         )
         image_uris.append(f"s3://{settings.s3_bucket}/{key}")
 
-    # Create verification using shared service
-    verification = await create_document_verification(
+    # Persist the processing state first; OCR/face inference runs outside the
+    # request worker just like the BFF-facing document endpoint.
+    verification, _ = await enqueue_document_verification(
         db=db,
         user_id=user_id,
-        image_uris=image_uris,
         doc_type_input=doc_type_input,
         client_ip=None,  # Admin-initiated, no client IP
         user_agent=f"admin/{operator}",
-        verification_id=verification_id,
         operator=operator,
     )
 
     await db.commit()
+    enqueue_document_processing(
+        verification_id=verification.id,
+        image_uris=image_uris,
+        doc_type_input=doc_type_input,
+        client_ip=None,
+        user_agent=f"admin/{operator}",
+    )
 
     return {
         "verification_id": verification.id,

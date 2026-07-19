@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+_face_detector = None
+
 
 @dataclass
 class FrameMetrics:
@@ -51,8 +53,16 @@ def _detect_face_region(img: np.ndarray) -> np.ndarray | None:
     import cv2  # noqa: PLC0415
 
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
-    detector = cv2.CascadeClassifier(cascade_path)
+    global _face_detector
+    if _face_detector is None:
+        classifier = getattr(cv2, "CascadeClassifier", None)
+        if classifier is None:
+            # Keep liveness fail-closed when an incomplete OpenCV build is
+            # deployed: there is no face detector, so no frame can pass.
+            return None
+        cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+        _face_detector = classifier(cascade_path)
+    detector = _face_detector
     faces = detector.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(80, 80))
     if len(faces) == 0:
         return None

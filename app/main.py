@@ -13,7 +13,14 @@ from app.api import admin, document, health, identity, liveness
 from app.core.config import settings
 from app.core.db import close_db, init_db
 from app.core.redis import close_redis
+from app.services.inference_executor import (
+    run_inference,
+    start_inference_executor,
+    stop_inference_executor,
+    warm_models,
+)
 from app.services.reconciliation_service import reconciliation_loop
+from app.services.verification_jobs import stop_verification_jobs
 
 
 @asynccontextmanager
@@ -21,6 +28,8 @@ async def lifespan(app: FastAPI):
     # Startup
     settings.validate_secrets()
     await init_db()
+    await start_inference_executor()
+    await run_inference(warm_models)
     # Start the webhook reconciliation background task.
     # It retries any approved/rejected verifications where the BFF webhook
     # delivery failed (e.g. BFF was down or returned 4xx/5xx).
@@ -32,6 +41,8 @@ async def lifespan(app: FastAPI):
         await reconcile_task
     except asyncio.CancelledError:
         pass
+    await stop_verification_jobs()
+    await stop_inference_executor()
     await close_db()
     await close_redis()
 

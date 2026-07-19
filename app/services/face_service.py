@@ -79,6 +79,17 @@ def extract_embedding(image_bytes: bytes) -> list[float] | None:
     return None
 
 
+def warm_model(image_bytes: bytes) -> None:
+    """Load ArcFace and run one detection-tolerant dummy representation."""
+    path = None
+    try:
+        df = _load_deepface()
+        path = _bytes_to_temp_file(image_bytes)
+        df.represent(img_path=path, model_name="ArcFace", enforce_detection=False)
+    finally:
+        _safe_unlink(path)
+
+
 def _cosine_similarity(a: list[float], b: list[float]) -> float:
     va = np.array(a)
     vb = np.array(b)

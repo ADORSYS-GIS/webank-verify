@@ -50,6 +50,20 @@ curl http://localhost:8070/health
 docker compose up
 ```
 
+## Asynchronous KYC processing
+
+`POST /document/submit` and `POST /liveness/verify` validate the submitted S3
+objects, persist a `processing` verification, and return `202 Accepted` with
+`{"verification_id": "…", "status": "processing"}`. OCR, ArcFace, and
+liveness analysis run on one dedicated inference thread per uvicorn process;
+the event loop remains available for `/health` and webhook delivery. Models are
+warmed with a dummy inference at application startup.
+
+The terminal decision remains the existing signed webhook (`kyc.level2.approved`
+or `kyc.level2.rejected`). `manual_review` continues through the operator flow,
+which is unchanged. This matches the BFF's [202 decoupling PR #262](https://github.com/ADORSYS-GIS/webank-mobile/pull/262)
+and its [source issue #261](https://github.com/ADORSYS-GIS/webank-mobile/issues/261).
+
 ## API contract
 
 | Method | Path | Purpose |
