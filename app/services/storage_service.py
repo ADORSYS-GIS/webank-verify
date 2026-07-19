@@ -7,7 +7,7 @@ import uuid
 from urllib.parse import urlparse
 
 import boto3
-from botocore.exceptions import ClientError
+from botocore.exceptions import BotoCoreError, ClientError
 
 from app.core.config import settings
 
@@ -15,6 +15,10 @@ _client = None
 _presign_client = None
 
 logger = logging.getLogger(__name__)
+
+
+class StorageFetchError(RuntimeError):
+    """Raised when a submitted S3 object cannot be retrieved."""
 
 
 def _get_client():
@@ -93,8 +97,12 @@ def parse_s3_uri(s3_uri: str) -> tuple[str, str]:
 def fetch_bytes(s3_uri: str) -> bytes:
     """Fetch raw object bytes for a validated in-bucket ``s3://`` URI."""
     bucket, key = parse_s3_uri(s3_uri)
-    response = _get_client().get_object(Bucket=bucket, Key=key)
-    return response["Body"].read()
+    try:
+        response = _get_client().get_object(Bucket=bucket, Key=key)
+        return response["Body"].read()
+    except (BotoCoreError, ClientError) as exc:
+        logger.warning("Unable to fetch submitted S3 object: bucket=%s key=%s", bucket, key)
+        raise StorageFetchError("Unable to retrieve submitted image from storage") from exc
 
 
 def upload_bytes(

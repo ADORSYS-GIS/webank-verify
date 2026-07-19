@@ -5,6 +5,7 @@ from app.api.liveness import verify_liveness
 from app.models.request import LivenessVerifyRequest
 from app.models.db import Verification, ReviewQueue
 from app.services.liveness_service import LivenessResult
+from app.services.storage_service import StorageFetchError
 from fastapi import Request
 
 class MockResult:
@@ -57,6 +58,21 @@ async def test_verify_liveness_idempotent():
     assert resp.check_id == "v1"
     assert resp.score == 85
     assert resp.status == "pending"
+
+
+@patch("app.api.liveness.run_in_threadpool")
+@pytest.mark.asyncio
+async def test_verify_liveness_returns_422_when_s3_object_is_unavailable(mock_run):
+    db = AsyncMock()
+    db.execute.return_value = MockResult(Verification(id="v1", user_id="user123", status="pending"))
+    mock_run.side_effect = StorageFetchError("missing")
+    body = LivenessVerifyRequest(user_id="user123", frame_uris=["s3://webank-verify/kyc/user123/f1.jpg"])
+    request = MagicMock(spec=Request)
+
+    with pytest.raises(HTTPException) as exc:
+        await verify_liveness(body=body, request=request, _="key", db=db)
+
+    assert exc.value.status_code == 422
 
 @patch("app.api.liveness.run_in_threadpool")
 @patch("app.api.liveness.webhook_service.build_webhook_payload", new_callable=AsyncMock)

@@ -28,6 +28,7 @@ from app.services import (
     webhook_service,
 )
 from app.services.ocr_service import DocumentFields
+from app.services.storage_service import StorageFetchError
 
 router = APIRouter()
 
@@ -88,9 +89,15 @@ async def verify_liveness(
         )
 
     # Heavy S3 fetch and liveness analysis, off the event loop.
-    liveness_result, frame_keys, frame_bytes = await run_in_threadpool(
-        _process_liveness, body.frame_uris
-    )
+    try:
+        liveness_result, frame_keys, frame_bytes = await run_in_threadpool(
+            _process_liveness, body.frame_uris
+        )
+    except (StorageFetchError, ValueError) as exc:
+        raise HTTPException(
+            status_code=422,
+            detail="Unable to retrieve submitted liveness frame from storage",
+        ) from exc
 
     # Face match: sharpest selfie frame vs the stored ID face embedding.
     face_match_result = None

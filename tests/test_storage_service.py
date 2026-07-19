@@ -1,6 +1,7 @@
 from unittest.mock import MagicMock
 
 import pytest
+from botocore.exceptions import ClientError
 
 from app.services import storage_service
 
@@ -24,3 +25,12 @@ def test_fetch_bytes_reads_validated_s3_object(monkeypatch):
 
     assert storage_service.fetch_bytes("s3://webank-verify/kyc/user/front.jpg") == b"image-bytes"
     client.get_object.assert_called_once_with(Bucket="webank-verify", Key="kyc/user/front.jpg")
+
+
+def test_fetch_bytes_wraps_s3_errors(monkeypatch):
+    client = MagicMock()
+    client.get_object.side_effect = ClientError({"Error": {"Code": "NoSuchKey"}}, "GetObject")
+    monkeypatch.setattr(storage_service, "_get_client", lambda: client)
+
+    with pytest.raises(storage_service.StorageFetchError, match="Unable to retrieve"):
+        storage_service.fetch_bytes("s3://webank-verify/kyc/user/front.jpg")

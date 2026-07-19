@@ -40,6 +40,7 @@ def _bytes_to_temp_file(data: bytes) -> str:
     """Write image bytes to a temp file and return path (deepface needs file paths)."""
     with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as f:
         f.write(data)
+        f.flush()
         return f.name
 
 
