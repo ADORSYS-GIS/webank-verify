@@ -55,7 +55,8 @@ docker compose up
 `POST /document/submit` and `POST /liveness/verify` validate the submitted S3
 objects, persist a `processing` verification, and return `202 Accepted` with
 `{"verification_id": "…", "status": "processing"}`. OCR, ArcFace, and
-liveness analysis run on one dedicated inference thread per uvicorn process;
+liveness analysis run on one dedicated inference thread in the single uvicorn
+worker;
 the event loop remains available for `/health` and webhook delivery. Models are
 warmed with a dummy inference at application startup.
 

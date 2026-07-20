@@ -145,39 +145,45 @@ async def enqueue_document_verification(
             status="processing",
         ), False
 
-    existing = (
-        await db.execute(
-            select(Verification)
-            .where(
-                Verification.user_id == user_id,
-                Verification.type == "document",
-                Verification.status.in_(["processing", "pending", "manual_review"]),
+    try:
+        existing = (
+            await db.execute(
+                select(Verification)
+                .where(
+                    Verification.user_id == user_id,
+                    Verification.type == "document",
+                    Verification.status.in_(["processing", "pending", "manual_review"]),
+                )
+                .order_by(Verification.created_at.desc())
+                .limit(1)
             )
-            .order_by(Verification.created_at.desc())
-            .limit(1)
-        )
-    ).scalar_one_or_none()
-    if existing is not None:
-        await redis.delete(lock_key)
-        return existing, False
+        ).scalar_one_or_none()
+        if existing is not None:
+            await redis.delete(lock_key)
+            return existing, False
 
-    verification = Verification(
-        id=verification_id,
-        user_id=user_id,
-        type="document",
-        status="processing",
-        doc_type=DOC_TYPE_MAP.get(doc_type_input, "CNI"),
-        device_info={"user_agent": user_agent, "ip": client_ip},
-    )
-    db.add(verification)
-    db.add(
-        VerificationEvent(
-            verification_id=verification_id,
-            event="document_queued",
-            payload={"doc_type": verification.doc_type, "source": "user_submission"},
+        verification = Verification(
+            id=verification_id,
+            user_id=user_id,
+            type="document",
+            status="processing",
+            doc_type=DOC_TYPE_MAP.get(doc_type_input, "CNI"),
+            device_info={"user_agent": user_agent, "ip": client_ip},
         )
-    )
-    return verification, True
+        db.add(verification)
+        db.add(
+            VerificationEvent(
+                verification_id=verification_id,
+                event="document_queued",
+                payload={"doc_type": verification.doc_type, "source": "user_submission"},
+            )
+        )
+        return verification, True
+    except Exception:
+        # ``created`` is not available to the caller until this function
+        # returns, so this scope owns cleanup for failures after SET NX.
+        await redis.delete(lock_key)
+        raise
 
 
 async def release_document_submission_lock(user_id: str) -> None:

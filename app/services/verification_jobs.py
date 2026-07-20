@@ -148,6 +148,11 @@ async def _run_document_job(
                 )
             ).scalar_one_or_none()
             if verification is None or verification.status != "processing":
+                logger.info(
+                    "Skipping document verification %s because status changed to %s",
+                    verification_id,
+                    verification.status if verification is not None else "missing",
+                )
                 return
             await complete_document_verification(
                 db=db,

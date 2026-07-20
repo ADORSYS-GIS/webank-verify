@@ -516,6 +516,12 @@ async def create_verification(
         operator=operator,
     )
 
+    response = {
+        "verification_id": verification.id,
+        "status": verification.status,
+        "doc_type": verification.doc_type,
+        "user_id": verification.user_id,
+    }
     await db.commit()
     enqueue_document_processing(
         verification_id=verification.id,
@@ -525,9 +531,4 @@ async def create_verification(
         user_agent=f"admin/{operator}",
     )
 
-    return {
-        "verification_id": verification.id,
-        "status": verification.status,
-        "doc_type": verification.doc_type,
-        "user_id": verification.user_id,
-    }
+    return response

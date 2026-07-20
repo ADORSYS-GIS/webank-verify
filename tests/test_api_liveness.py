@@ -69,6 +69,26 @@ async def test_verify_liveness_is_idempotent_while_processing():
     db.commit.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+async def test_verify_liveness_rejects_a_completed_manual_review():
+    db = AsyncMock()
+    db.execute.return_value = MockResult(
+        Verification(
+            id="v1",
+            user_id="user123",
+            status="manual_review",
+            document_fields={"confidence": 0.8},
+            liveness_metrics={"score": 42},
+        )
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await verify_liveness(body=_body(), request=_request(), _="key", db=db)
+
+    assert exc.value.status_code == 409
+    assert "already processed" in exc.value.detail
+
+
 @patch("app.api.liveness.run_storage_io", new_callable=AsyncMock)
 @pytest.mark.asyncio
 async def test_verify_liveness_returns_422_when_s3_object_is_unavailable(mock_storage):

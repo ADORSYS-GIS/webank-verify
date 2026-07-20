@@ -108,13 +108,16 @@ def fetch_bytes(s3_uri: str) -> bytes:
 def validate_objects(s3_uris: list[str]) -> None:
     """Validate that every submitted URI points to a readable uploaded object."""
     client = _get_client()
+    bucket = key = "unknown"
     try:
         for s3_uri in s3_uris:
             bucket, key = parse_s3_uri(s3_uri)
             client.head_object(Bucket=bucket, Key=key)
     except (BotoCoreError, ClientError) as exc:
-        logger.warning("Unable to validate submitted S3 object")
-        raise StorageFetchError("Unable to retrieve submitted image from storage") from exc
+        logger.warning("Unable to validate submitted S3 object: bucket=%s key=%s", bucket, key)
+        raise StorageFetchError(
+            f"Unable to retrieve submitted image from storage: {bucket}/{key}"
+        ) from exc
 
 
 def upload_bytes(

@@ -14,8 +14,6 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, TypeVar
 
-from app.core.config import settings
-
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
@@ -29,7 +27,9 @@ async def start_inference_executor() -> None:
     global _executor, _io_executor
     if _executor is None:
         _executor = ThreadPoolExecutor(
-            max_workers=settings.inference_workers,
+            # One inference at a time per process avoids multiplying the
+            # torch/TensorFlow working set under CPU-only deployments.
+            max_workers=1,
             thread_name_prefix="kyc-inference",
         )
     if _io_executor is None:

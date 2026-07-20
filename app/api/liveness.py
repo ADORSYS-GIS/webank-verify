@@ -56,8 +56,14 @@ async def verify_liveness(
         )
     if document.liveness_metrics is not None:
         # The same row is the idempotency key for an already queued/completed
-        # liveness request.  The BFF ignores this body and waits for its webhook.
-        return AcceptedVerificationResponse(verification_id=document.id, status="processing")
+        # liveness request. A completed manual-review decision must not be
+        # presented to the BFF as if fresh work had been queued.
+        if document.liveness_metrics.get("status") == "processing":
+            return AcceptedVerificationResponse(verification_id=document.id, status="processing")
+        raise HTTPException(
+            status_code=409,
+            detail="Liveness verification already processed — submit new documents first",
+        )
 
     try:
         await run_storage_io(validate_objects, body.frame_uris)
