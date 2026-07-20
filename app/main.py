@@ -20,7 +20,10 @@ from app.services.inference_executor import (
     warm_models,
 )
 from app.services.reconciliation_service import reconciliation_loop
-from app.services.verification_jobs import stop_verification_jobs
+from app.services.verification_jobs import (
+    recover_stale_processing_verifications,
+    stop_verification_jobs,
+)
 
 
 @asynccontextmanager
@@ -28,6 +31,7 @@ async def lifespan(app: FastAPI):
     # Startup
     settings.validate_secrets()
     await init_db()
+    await recover_stale_processing_verifications()
     await start_inference_executor()
     await run_inference(warm_models)
     # Start the webhook reconciliation background task.

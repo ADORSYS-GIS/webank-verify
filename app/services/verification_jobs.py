@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from dataclasses import dataclass
 
 from sqlalchemy import select
 
@@ -27,6 +28,13 @@ logger = logging.getLogger(__name__)
 
 _background_tasks: set[asyncio.Task[None]] = set()
 _DOCUMENT_WAIT_SECONDS = 300
+_DOCUMENT_POLL_INTERVAL_SECONDS = 1
+
+
+@dataclass(frozen=True, slots=True)
+class _ReadyDocument:
+    document_fields: dict
+    face_embedding: list[float] | None
 
 
 def _track(task: asyncio.Task[None]) -> None:
@@ -75,6 +83,64 @@ async def stop_verification_jobs() -> None:
     _background_tasks.clear()
 
 
+async def recover_stale_processing_verifications() -> int:
+    """Make process-local jobs left by a crash visible to operators."""
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(Verification)
+            .where(Verification.status == "processing")
+            .with_for_update()
+        )
+        stale = result.scalars().all()
+        for verification in stale:
+            is_liveness = (
+                isinstance(verification.liveness_metrics, dict)
+                and verification.liveness_metrics.get("status") == "processing"
+            )
+            stage = "liveness" if is_liveness else "document"
+            verification.status = "manual_review"
+            if is_liveness:
+                verification.liveness_metrics = {"status": "failed"}
+            warnings = list(verification.warnings or [])
+            warnings.append(
+                {
+                    "code": f"{stage.upper()}_PROCESSING_RECOVERED",
+                    "message": "Processing was interrupted by a service restart and requires manual review",
+                    "severity": "critical",
+                }
+            )
+            verification.warnings = warnings
+            db.add(
+                VerificationEvent(
+                    verification_id=verification.id,
+                    event="processing_recovered",
+                    payload={"stage": stage, "reason": "process_restart"},
+                )
+            )
+            queue = (
+                await db.execute(
+                    select(ReviewQueue).where(ReviewQueue.verification_id == verification.id)
+                )
+            ).scalar_one_or_none()
+            if queue is None:
+                db.add(
+                    ReviewQueue(
+                        id=str(uuid.uuid4()),
+                        verification_id=verification.id,
+                        user_id=verification.user_id,
+                        type="complete" if is_liveness else "document",
+                        priority=1,
+                    )
+                )
+            else:
+                queue.priority = 1
+        if stale:
+            await db.commit()
+        if stale:
+            logger.warning("Recovered %d interrupted verification job(s)", len(stale))
+        return len(stale)
+
+
 async def _mark_processing_failed(verification_id: str, stage: str, exc: Exception) -> None:
     """Retain a reviewable record if an accepted job later cannot run."""
     async with AsyncSessionLocal() as db:
@@ -93,6 +159,8 @@ async def _mark_processing_failed(verification_id: str, stage: str, exc: Excepti
         )
         verification.warnings = warnings
         verification.status = "manual_review"
+        if stage == "liveness":
+            verification.liveness_metrics = {"status": "failed"}
         db.add(
             VerificationEvent(
                 verification_id=verification.id,
@@ -182,23 +250,31 @@ def _process_liveness(frame_uris: list[str]):
     return liveness_service.analyze_frames(frame_bytes), frame_keys, frame_bytes
 
 
-async def _wait_for_document(verification_id: str) -> Verification | None:
+async def _wait_for_document(verification_id: str) -> _ReadyDocument | None:
     """Wait for the preceding document job without occupying the ML worker."""
     deadline = asyncio.get_running_loop().time() + _DOCUMENT_WAIT_SECONDS
     while True:
         async with AsyncSessionLocal() as db:
-            verification = (
-                await db.execute(select(Verification).where(Verification.id == verification_id))
-            ).scalar_one_or_none()
-            if verification is None:
+            state = (
+                await db.execute(
+                    select(Verification.status, Verification.document_fields).where(
+                        Verification.id == verification_id
+                    )
+                )
+            ).one_or_none()
+            if state is None:
                 return None
-            if verification.document_fields:
-                return verification
-            if verification.status != "processing":
+            verification_status, document_fields = state
+            if document_fields:
+                face_embedding = await db.scalar(
+                    select(Verification.face_embedding).where(Verification.id == verification_id)
+                )
+                return _ReadyDocument(document_fields, face_embedding)
+            if verification_status != "processing":
                 return None
         if asyncio.get_running_loop().time() >= deadline:
             raise TimeoutError("Document processing did not complete before liveness timeout")
-        await asyncio.sleep(0.1)
+        await asyncio.sleep(_DOCUMENT_POLL_INTERVAL_SECONDS)
 
 
 async def _run_liveness_job(
@@ -210,6 +286,11 @@ async def _run_liveness_job(
         document = await _wait_for_document(verification_id)
         if document is None:
             logger.info("Skipping liveness job %s: document is not ready", verification_id)
+            await _mark_processing_failed(
+                verification_id,
+                "liveness",
+                RuntimeError("document processing did not produce a usable verification"),
+            )
             return
 
         liveness_result, frame_keys, frame_bytes = await run_inference(_process_liveness, frame_uris)

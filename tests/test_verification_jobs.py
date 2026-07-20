@@ -59,3 +59,20 @@ async def test_liveness_job_delivers_existing_webhook_on_auto_approval(
     db.commit.assert_awaited_once()
     mock_build_payload.assert_awaited_once_with(db, document)
     mock_fire_webhook.assert_called_once_with("kyc.level2.approved", {"verification_id": "v1"}, "v1")
+
+
+@patch("app.services.verification_jobs._mark_processing_failed", new_callable=AsyncMock)
+@patch("app.services.verification_jobs._wait_for_document", new_callable=AsyncMock)
+@pytest.mark.asyncio
+async def test_liveness_job_marks_missing_document_as_failed(
+    mock_wait_for_document,
+    mock_mark_processing_failed,
+):
+    mock_wait_for_document.return_value = None
+
+    await _run_liveness_job("v1", ["s3://webank-verify/kyc/user123/f1.jpg"], None)
+
+    mock_mark_processing_failed.assert_awaited_once()
+    args = mock_mark_processing_failed.await_args.args
+    assert args[:2] == ("v1", "liveness")
+    assert "document processing" in str(args[2])
