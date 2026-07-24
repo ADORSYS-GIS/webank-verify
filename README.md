@@ -60,6 +60,11 @@ worker;
 the event loop remains available for `/health` and webhook delivery. Models are
 warmed with a dummy inference at application startup.
 
+The job registry and inference executor are process-local by design. Keep one
+uvicorn worker per replica; increasing worker or replica counts multiplies the
+ML memory/CPU budget and queues work independently. A durable shared queue is
+required before using this service as a horizontally scaled job worker.
+
 The terminal decision remains the existing signed webhook (`kyc.level2.approved`
 or `kyc.level2.rejected`). `manual_review` continues through the operator flow,
 which is unchanged. This matches the BFF's [202 decoupling PR #262](https://github.com/ADORSYS-GIS/webank-mobile/pull/262)
