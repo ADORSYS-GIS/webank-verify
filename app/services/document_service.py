@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.db import AsyncSessionLocal
 from app.core.redis import get_redis
 from app.models.db import ReviewQueue, Verification, VerificationEvent
 from app.services import face_service, ip_service, mrz_service, ocr_service, risk_service, storage_service
@@ -199,35 +200,17 @@ async def complete_document_verification(
     client_ip: str | None = None,
     user_agent: str | None = None,
     pipeline_result: tuple[DocumentFields, list[float] | None, list[str]] | None = None,
+    ip_analysis: IPAnalysisResult | None = None,
+    duplicate_user_ids: list[str] | None = None,
 ) -> Verification:
-    """Run document inference and populate a previously queued verification."""
+    """Persist a queued verification using work prepared outside its row lock."""
     doc_type = verification.doc_type or DOC_TYPE_MAP.get(doc_type_input, "CNI")
     if pipeline_result is None:
         pipeline_result = await run_inference(
             process_document_images, image_uris, doc_type, doc_type_input
         )
     doc_fields, embedding, img_keys = pipeline_result
-    ip_analysis: IPAnalysisResult | None = (
-        await ip_service.analyze_ip(client_ip) if client_ip else None
-    )
-
-    duplicate_user_ids: list[str] = []
-    if embedding:
-        rows = (
-            await db.execute(
-                select(Verification.user_id, Verification.face_embedding).where(
-                    Verification.type == "document",
-                    Verification.status == "approved",
-                    Verification.user_id != verification.user_id,
-                    Verification.face_embedding.isnot(None),
-                )
-            )
-        ).all()
-        duplicate_user_ids = await run_inference(
-            face_service.check_duplicate,
-            embedding,
-            [(uid, existing_embedding) for uid, existing_embedding in rows if existing_embedding],
-        )
+    duplicate_user_ids = duplicate_user_ids or []
 
     risk: RiskResult = risk_service.compute_risk(
         liveness=None,
@@ -304,6 +287,35 @@ async def complete_document_verification(
         )
     )
     return verification
+
+
+async def prepare_document_enrichment(
+    user_id: str,
+    embedding: list[float] | None,
+    client_ip: str | None,
+) -> tuple[IPAnalysisResult | None, list[str]]:
+    """Run external and read-only document checks before taking the row lock."""
+    ip_analysis = await ip_service.analyze_ip(client_ip) if client_ip else None
+    if not embedding:
+        return ip_analysis, []
+
+    async with AsyncSessionLocal() as db:
+        rows = (
+            await db.execute(
+                select(Verification.user_id, Verification.face_embedding).where(
+                    Verification.type == "document",
+                    Verification.status == "approved",
+                    Verification.user_id != user_id,
+                    Verification.face_embedding.isnot(None),
+                )
+            )
+        ).all()
+    duplicate_user_ids = await run_inference(
+        face_service.check_duplicate,
+        embedding,
+        [(approved_user_id, approved_embedding) for approved_user_id, approved_embedding in rows if approved_embedding],
+    )
+    return ip_analysis, duplicate_user_ids
 
 
 async def create_document_verification(

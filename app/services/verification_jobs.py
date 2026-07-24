@@ -7,7 +7,7 @@ import logging
 import uuid
 from dataclasses import dataclass
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from app.core.db import AsyncSessionLocal
 from app.models.db import ReviewQueue, Verification, VerificationEvent
@@ -19,7 +19,11 @@ from app.services import (
     risk_service,
     webhook_service,
 )
-from app.services.document_service import complete_document_verification, process_document_images
+from app.services.document_service import (
+    complete_document_verification,
+    prepare_document_enrichment,
+    process_document_images,
+)
 from app.services.inference_executor import run_inference
 from app.services.ocr_service import DocumentFields
 from app.services.storage_service import StorageFetchError
@@ -88,7 +92,12 @@ async def recover_stale_processing_verifications() -> int:
     async with AsyncSessionLocal() as db:
         result = await db.execute(
             select(Verification)
-            .where(Verification.status == "processing")
+            .where(
+                or_(
+                    Verification.status == "processing",
+                    Verification.liveness_metrics["status"].as_string() == "processing",
+                )
+            )
             .with_for_update()
         )
         stale = result.scalars().all()
@@ -202,9 +211,15 @@ async def _run_document_job(
             if verification is None or verification.status != "processing":
                 return
             doc_type = verification.doc_type or "CNI"
+            user_id = verification.user_id
 
         pipeline_result = await run_inference(
             process_document_images, image_uris, doc_type, doc_type_input
+        )
+        ip_analysis, duplicate_user_ids = await prepare_document_enrichment(
+            user_id=user_id,
+            embedding=pipeline_result[1],
+            client_ip=client_ip,
         )
 
         async with AsyncSessionLocal() as db:
@@ -230,6 +245,8 @@ async def _run_document_job(
                 client_ip=client_ip,
                 user_agent=user_agent,
                 pipeline_result=pipeline_result,
+                ip_analysis=ip_analysis,
+                duplicate_user_ids=duplicate_user_ids,
             )
             await db.commit()
             logger.info("Document verification %s completed", verification_id)

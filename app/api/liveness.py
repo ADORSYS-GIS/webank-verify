@@ -65,6 +65,9 @@ async def verify_liveness(
             detail="Liveness verification already processed — submit new documents first",
         )
 
+    document_id = document.id
+    # End the read transaction before potentially slow storage validation.
+    await db.rollback()
     try:
         await run_storage_io(validate_objects, body.frame_uris)
     except (StorageFetchError, ValueError) as exc:
@@ -72,6 +75,36 @@ async def verify_liveness(
             status_code=422,
             detail="Unable to retrieve submitted liveness frame from storage",
         ) from exc
+
+    # Re-read and lock only after storage validation. This keeps blocking I/O
+    # outside the lock while making the idempotency check and marker write one
+    # atomic transaction.
+    document = (
+        await db.execute(
+            select(Verification)
+            .where(Verification.id == document_id)
+            .with_for_update()
+        )
+    ).scalar_one_or_none()
+    if document is None:
+        raise HTTPException(status_code=409, detail="Document verification no longer exists")
+    if document.status in ("approved", "rejected"):
+        raise HTTPException(
+            status_code=409,
+            detail="Document verification already processed — submit new documents first",
+        )
+    if document.status == "manual_review" and not document.document_fields:
+        raise HTTPException(
+            status_code=409,
+            detail="Document verification requires manual review before liveness can run",
+        )
+    if document.liveness_metrics is not None:
+        if document.liveness_metrics.get("status") == "processing":
+            return AcceptedVerificationResponse(verification_id=document.id, status="processing")
+        raise HTTPException(
+            status_code=409,
+            detail="Liveness verification already processed — submit new documents first",
+        )
 
     document.liveness_metrics = {"status": "processing"}
     db.add(

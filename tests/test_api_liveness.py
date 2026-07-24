@@ -116,5 +116,32 @@ async def test_verify_liveness_queues_work_and_returns_202(mock_storage, mock_di
     assert response.verification_id == "v1"
     assert response.status == "processing"
     assert document.liveness_metrics == {"status": "processing"}
+    db.rollback.assert_awaited_once()
     db.commit.assert_awaited_once()
     mock_dispatch.assert_called_once_with("v1", _body().frame_uris, "1.2.3.4")
+
+
+@patch("app.api.liveness.enqueue_liveness_processing")
+@patch("app.api.liveness.run_storage_io", new_callable=AsyncMock)
+@pytest.mark.asyncio
+async def test_verify_liveness_does_not_enqueue_when_another_request_claimed_it(
+    mock_storage,
+    mock_dispatch,
+):
+    initial = Verification(id="v1", user_id="user123", status="pending")
+    claimed = Verification(
+        id="v1",
+        user_id="user123",
+        status="pending",
+        liveness_metrics={"status": "processing"},
+    )
+    db = AsyncMock()
+    db.execute.side_effect = [MockResult(initial), MockResult(claimed)]
+
+    response = await verify_liveness(body=_body(), request=_request(), _="key", db=db)
+
+    assert response.verification_id == "v1"
+    mock_storage.assert_awaited_once()
+    mock_dispatch.assert_not_called()
+    db.commit.assert_not_awaited()
+    assert "FOR UPDATE" in str(db.execute.await_args_list[1].args[0])

@@ -48,21 +48,31 @@ async def test_startup_recovery_marks_processing_jobs_reviewable(mock_factory):
         status="processing",
         liveness_metrics={"status": "processing"},
     )
+    pending_liveness = Verification(
+        id="live-2",
+        user_id="user-3",
+        type="document",
+        status="pending",
+        liveness_metrics={"status": "processing"},
+    )
     db = AsyncMock()
     db.add = MagicMock()
     db.execute.side_effect = [
-        ScalarRowsResult([document, liveness]),
+        ScalarRowsResult([document, liveness, pending_liveness]),
         ScalarResult(ReviewQueue(verification_id="doc-1")),
+        ScalarResult(None),
         ScalarResult(None),
     ]
     mock_factory.return_value = _session(db)
 
     recovered = await recover_stale_processing_verifications()
 
-    assert recovered == 2
+    assert recovered == 3
     assert document.status == "manual_review"
     assert liveness.status == "manual_review"
     assert liveness.liveness_metrics == {"status": "failed"}
+    assert pending_liveness.status == "manual_review"
+    assert pending_liveness.liveness_metrics == {"status": "failed"}
     db.commit.assert_awaited_once()
 
 
