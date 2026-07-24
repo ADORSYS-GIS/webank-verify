@@ -37,3 +37,34 @@ async def test_lifespan_warms_models_once_before_accepting_requests(
     mock_close_redis.assert_awaited_once()
     mock_stop_jobs.assert_awaited_once()
     mock_stop_executor.assert_awaited_once()
+
+
+@patch("app.main.stop_inference_executor", new_callable=AsyncMock)
+@patch("app.main.stop_verification_jobs", new_callable=AsyncMock)
+@patch("app.main.close_redis", new_callable=AsyncMock)
+@patch("app.main.close_db", new_callable=AsyncMock)
+@patch("app.main.run_inference", new_callable=AsyncMock)
+@patch("app.main.start_inference_executor", new_callable=AsyncMock)
+@patch("app.main.recover_stale_processing_verifications", new_callable=AsyncMock)
+@patch("app.main.init_db", new_callable=AsyncMock)
+@pytest.mark.asyncio
+async def test_lifespan_cleans_up_if_model_warmup_fails(
+    mock_init_db,
+    mock_recover_stale,
+    mock_start_executor,
+    mock_run_inference,
+    mock_close_db,
+    mock_close_redis,
+    mock_stop_jobs,
+    mock_stop_executor,
+):
+    mock_run_inference.side_effect = RuntimeError("warmup failed")
+
+    with pytest.raises(RuntimeError, match="warmup failed"):
+        async with lifespan(FastAPI()):
+            pass
+
+    mock_stop_jobs.assert_awaited_once()
+    mock_stop_executor.assert_awaited_once()
+    mock_close_db.assert_awaited_once()
+    mock_close_redis.assert_awaited_once()

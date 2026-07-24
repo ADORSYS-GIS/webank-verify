@@ -323,6 +323,12 @@ async def _run_liveness_job(
             ).scalar_one_or_none()
             if record is None:
                 return
+            if record.status in ("approved", "rejected") or record.reviewer:
+                logger.info(
+                    "Skipping liveness verification %s because it was already reviewed",
+                    verification_id,
+                )
+                return
             _apply_liveness_result(
                 record, liveness_result, frame_keys, face_match_result, ip_analysis, risk, status
             )

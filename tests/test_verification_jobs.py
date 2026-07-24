@@ -76,3 +76,45 @@ async def test_liveness_job_marks_missing_document_as_failed(
     args = mock_mark_processing_failed.await_args.args
     assert args[:2] == ("v1", "liveness")
     assert "document processing" in str(args[2])
+
+
+@pytest.mark.asyncio
+async def test_liveness_job_does_not_override_operator_decision():
+    record = Verification(
+        id="v1",
+        user_id="user123",
+        status="approved",
+        reviewer="operator-1",
+        document_fields={"confidence": 0.9},
+    )
+    db = AsyncMock()
+    db.execute.return_value = MockResult(record)
+    session = MagicMock()
+    session.__aenter__ = AsyncMock(return_value=db)
+    session.__aexit__ = AsyncMock(return_value=False)
+
+    with (
+        patch(
+            "app.services.verification_jobs.AsyncSessionLocal",
+            return_value=session,
+        ),
+        patch(
+            "app.services.verification_jobs._wait_for_document",
+            new_callable=AsyncMock,
+            return_value=record,
+        ),
+        patch(
+            "app.services.verification_jobs.run_inference",
+            new_callable=AsyncMock,
+            return_value=(LivenessResult(liveness_score=90, frames_analyzed=1), ["f1"], [b"frame"]),
+        ),
+        patch(
+            "app.services.verification_jobs.risk_service.compute_risk",
+            return_value=MagicMock(decision="approved", overall_score=95, warnings=[]),
+        ),
+        patch("app.services.verification_jobs._apply_liveness_result") as apply_result,
+    ):
+        await _run_liveness_job("v1", ["s3://webank-verify/kyc/user123/f1.jpg"], None)
+
+    apply_result.assert_not_called()
+    db.commit.assert_not_awaited()

@@ -28,27 +28,32 @@ from app.services.verification_jobs import (
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup
-    settings.validate_secrets()
-    await init_db()
-    await recover_stale_processing_verifications()
-    await start_inference_executor()
-    await run_inference(warm_models)
-    # Start the webhook reconciliation background task.
-    # It retries any approved/rejected verifications where the BFF webhook
-    # delivery failed (e.g. BFF was down or returned 4xx/5xx).
-    reconcile_task = asyncio.create_task(reconciliation_loop())
-    yield
-    # Shutdown — cancel the reconciliation task cleanly
-    reconcile_task.cancel()
+    reconcile_task: asyncio.Task[None] | None = None
     try:
-        await reconcile_task
-    except asyncio.CancelledError:
-        pass
-    await stop_verification_jobs()
-    await stop_inference_executor()
-    await close_db()
-    await close_redis()
+        # Startup
+        settings.validate_secrets()
+        await init_db()
+        await recover_stale_processing_verifications()
+        await start_inference_executor()
+        await run_inference(warm_models)
+        # Start the webhook reconciliation background task.
+        # It retries any approved/rejected verifications where the BFF webhook
+        # delivery failed (e.g. BFF was down or returned 4xx/5xx).
+        reconcile_task = asyncio.create_task(reconciliation_loop())
+        yield
+    finally:
+        # Cleanup also runs when startup/warmup fails, which matters for
+        # uvicorn --reload where a failed generation is replaced immediately.
+        if reconcile_task is not None:
+            reconcile_task.cancel()
+            try:
+                await reconcile_task
+            except asyncio.CancelledError:
+                pass
+        await stop_verification_jobs()
+        await stop_inference_executor()
+        await close_db()
+        await close_redis()
 
 
 app = FastAPI(
