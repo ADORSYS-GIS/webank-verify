@@ -59,3 +59,7 @@ All KYC/identity work goes here — never to `webank-kyc-manager`. **Default bra
 ## Python conventions
 Follow the fineract-apps Python conventions (type hints, specific exceptions, f-strings,
 `ruff`/`mypy`). FastAPI: Pydantic schemas per operation, `Depends()` DI, async I/O drivers.
+
+## Git conventions
+Always use Conventional Commits for commit messages (for example,
+`feat(kyc): queue document inference`).

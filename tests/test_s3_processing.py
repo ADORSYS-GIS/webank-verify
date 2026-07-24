@@ -1,6 +1,6 @@
 from unittest.mock import MagicMock
 
-from app.api.liveness import _process_liveness
+from app.services.verification_jobs import _process_liveness
 from app.services.document_service import process_document_images
 
 
@@ -29,13 +29,13 @@ def test_document_processing_fetches_s3_uris_and_records_keys(monkeypatch):
 
 def test_liveness_processing_fetches_s3_uris_and_records_keys(monkeypatch):
     frame_uris = ["s3://webank-verify/kyc/user/frame_0.jpg"]
-    monkeypatch.setattr("app.api.liveness.storage_service.fetch_bytes", lambda uri: b"frame")
+    monkeypatch.setattr("app.services.storage_service.fetch_bytes", lambda uri: b"frame")
     monkeypatch.setattr(
-        "app.api.liveness.storage_service.parse_s3_uri",
+        "app.services.storage_service.parse_s3_uri",
         lambda uri: ("webank-verify", "kyc/user/frame_0.jpg"),
     )
     analyze_frames = MagicMock(return_value="result")
-    monkeypatch.setattr("app.api.liveness.liveness_service.analyze_frames", analyze_frames)
+    monkeypatch.setattr("app.services.verification_jobs.liveness_service.analyze_frames", analyze_frames)
 
     result, keys, frames = _process_liveness(frame_uris)
 
