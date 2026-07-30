@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import base64
 import logging
 import uuid
-from datetime import timedelta
+from urllib.parse import urlparse
 
 import boto3
-from botocore.exceptions import ClientError
+from botocore.exceptions import BotoCoreError, ClientError
 
 from app.core.config import settings
 
@@ -16,6 +15,10 @@ _client = None
 _presign_client = None
 
 logger = logging.getLogger(__name__)
+
+
+class StorageFetchError(RuntimeError):
+    """Raised when a submitted S3 object cannot be retrieved."""
 
 
 def _get_client():
@@ -74,16 +77,63 @@ def _get_presign_client():
     return _presign_client
 
 
-def upload_image(b64_data: str, folder: str, filename: str | None = None) -> str:
-    """Upload a base64 image to S3. Returns the S3 key."""
+def parse_s3_uri(s3_uri: str) -> tuple[str, str]:
+    """Validate an in-bucket S3 URI and return its bucket and object key."""
+    parsed = urlparse(s3_uri)
+    if (
+        parsed.scheme != "s3"
+        or not parsed.netloc
+        or not parsed.path.lstrip("/")
+        or parsed.params
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError("Expected an s3://bucket/key URI")
+    if parsed.netloc != settings.s3_bucket:
+        raise ValueError("S3 URI bucket does not match configured storage bucket")
+    return parsed.netloc, parsed.path.lstrip("/")
+
+
+def fetch_bytes(s3_uri: str) -> bytes:
+    """Fetch raw object bytes for a validated in-bucket ``s3://`` URI."""
+    bucket, key = parse_s3_uri(s3_uri)
+    try:
+        response = _get_client().get_object(Bucket=bucket, Key=key)
+        return response["Body"].read()
+    except (BotoCoreError, ClientError) as exc:
+        logger.warning("Unable to fetch submitted S3 object: bucket=%s key=%s", bucket, key)
+        raise StorageFetchError("Unable to retrieve submitted image from storage") from exc
+
+
+def validate_objects(s3_uris: list[str]) -> None:
+    """Validate that every submitted URI points to a readable uploaded object."""
+    client = _get_client()
+    bucket = key = "unknown"
+    try:
+        for s3_uri in s3_uris:
+            bucket, key = parse_s3_uri(s3_uri)
+            client.head_object(Bucket=bucket, Key=key)
+    except (BotoCoreError, ClientError) as exc:
+        logger.warning("Unable to validate submitted S3 object: bucket=%s key=%s", bucket, key)
+        raise StorageFetchError(
+            f"Unable to retrieve submitted image from storage: {bucket}/{key}"
+        ) from exc
+
+
+def upload_bytes(
+    data: bytes,
+    folder: str,
+    filename: str | None = None,
+    content_type: str = "image/jpeg",
+) -> str:
+    """Upload raw image bytes to S3 and return the object key."""
     client = _get_client()
     key = f"{folder}/{filename or uuid.uuid4()}.jpg"
-    data = base64.b64decode(b64_data)
     client.put_object(
         Bucket=settings.s3_bucket,
         Key=key,
         Body=data,
-        ContentType="image/jpeg",
+        ContentType=content_type,
     )
     return key
 

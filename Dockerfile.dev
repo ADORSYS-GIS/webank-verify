@@ -24,6 +24,13 @@ RUN if [ "$USE_LOCAL_TENSORFLOW" = "true" ] && ls /tmp/wheels/tensorflow*.whl 1>
 # Stage 3: Install all remaining dependencies
 RUN pip install --no-cache-dir -r requirements.txt watchfiles
 
+# retinaface (a deepface backend) hard-depends on the GUI `opencv-python` package,
+# which pip installs alongside our pinned `opencv-python-headless` — both provide
+# the `cv2` module, and the resulting mixed-version site-packages/cv2/ is corrupted
+# (e.g. `cv2.CascadeClassifier` goes missing). Force headless as the sole provider.
+RUN pip uninstall -y opencv-python opencv-contrib-python && \
+    pip install --no-cache-dir --force-reinstall "opencv-python-headless>=4.9.0,<5.0.0"
+
 # Pre-download easyocr French model (~300 MB) and deepface ArcFace model (~100 MB)
 # so the first request doesn't hang downloading + decompressing them.
 RUN python -c "import easyocr; easyocr.Reader(['fr'], gpu=False)" 2>/dev/null || true

@@ -13,27 +13,47 @@ from app.api import admin, document, health, identity, liveness
 from app.core.config import settings
 from app.core.db import close_db, init_db
 from app.core.redis import close_redis
+from app.services.inference_executor import (
+    run_inference,
+    start_inference_executor,
+    stop_inference_executor,
+    warm_models,
+)
 from app.services.reconciliation_service import reconciliation_loop
+from app.services.verification_jobs import (
+    recover_stale_processing_verifications,
+    stop_verification_jobs,
+)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup
-    settings.validate_secrets()
-    await init_db()
-    # Start the webhook reconciliation background task.
-    # It retries any approved/rejected verifications where the BFF webhook
-    # delivery failed (e.g. BFF was down or returned 4xx/5xx).
-    reconcile_task = asyncio.create_task(reconciliation_loop())
-    yield
-    # Shutdown — cancel the reconciliation task cleanly
-    reconcile_task.cancel()
+    reconcile_task: asyncio.Task[None] | None = None
     try:
-        await reconcile_task
-    except asyncio.CancelledError:
-        pass
-    await close_db()
-    await close_redis()
+        # Startup
+        settings.validate_secrets()
+        await init_db()
+        await recover_stale_processing_verifications()
+        await start_inference_executor()
+        await run_inference(warm_models)
+        # Start the webhook reconciliation background task.
+        # It retries any approved/rejected verifications where the BFF webhook
+        # delivery failed (e.g. BFF was down or returned 4xx/5xx).
+        reconcile_task = asyncio.create_task(reconciliation_loop())
+        yield
+    finally:
+        # Cleanup also runs when startup/warmup fails, which matters for
+        # uvicorn --reload where a failed generation is replaced immediately.
+        if reconcile_task is not None:
+            reconcile_task.cancel()
+            try:
+                await reconcile_task
+            except asyncio.CancelledError:
+                pass
+        await stop_verification_jobs()
+        await stop_inference_executor()
+        await close_db()
+        await close_redis()
 
 
 app = FastAPI(

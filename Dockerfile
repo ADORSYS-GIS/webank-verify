@@ -18,6 +18,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# retinaface (a deepface backend) hard-depends on the GUI `opencv-python` package,
+# which pip installs alongside our pinned `opencv-python-headless` — both provide
+# the `cv2` module, and the resulting mixed-version site-packages/cv2/ is corrupted
+# (e.g. `cv2.CascadeClassifier` goes missing, crashing DeepFace at runtime). Force
+# headless as the sole provider.
+RUN pip uninstall -y opencv-python opencv-contrib-python && \
+    pip install --no-cache-dir --force-reinstall "opencv-python-headless>=4.9.0,<5.0.0"
+
 # Pre-download easyocr French model (~300 MB)
 RUN python -c "import easyocr; easyocr.Reader(['fr'], gpu=False)" 2>/dev/null || true
 
@@ -52,4 +60,4 @@ EXPOSE 8070
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8070/health')"] || exit 1
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8070", "--workers", "2"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8070", "--workers", "1"]

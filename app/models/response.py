@@ -3,17 +3,13 @@ from datetime import datetime
 from pydantic import BaseModel
 
 
-# ── BFF contract responses (must match kycmanager/client.go exactly) ──────────
+# ── webank-mobile BFF contract responses ─────────────────────────────────────
+# Submission endpoints are fire-and-forget; the terminal decision arrives via
+# the signed webhook. See docs/adr/0008-async-kyc-submission.md.
 
-class DocSubmitResponse(BaseModel):
-    submission_id: str
-    status: str  # "pending" | "in_review"
-
-
-class LivenessResponse(BaseModel):
-    check_id: str
-    status: str  # "pending" | "passed" | "failed"
-    score: int
+class AcceptedVerificationResponse(BaseModel):
+    verification_id: str
+    status: str = "processing"
 
 
 class IdentityResponse(BaseModel):

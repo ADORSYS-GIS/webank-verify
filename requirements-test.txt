@@ -8,6 +8,7 @@
 fastapi>=0.111.0
 pydantic>=2.7.0
 pydantic-settings>=2.2.0
+python-multipart>=0.0.9
 
 # Vision (cv2 is imported lazily by the OCR/liveness/face services and is
 # exercised for real by the liveness tests). The headless wheel needs no

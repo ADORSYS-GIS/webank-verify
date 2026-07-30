@@ -28,7 +28,6 @@ while reading the values cleanly. We therefore:
 
 from __future__ import annotations
 
-import base64
 import re
 from dataclasses import dataclass, field
 from datetime import date, datetime
@@ -108,10 +107,9 @@ def _compute_age(dob: date) -> int:
 
 # ── Image preprocessing ──────────────────────────────────────────────────────
 
-def _decode_image(b64: str) -> np.ndarray:
+def _decode_image(data: bytes) -> np.ndarray:
     import cv2  # noqa: PLC0415
 
-    data = base64.b64decode(b64)
     arr = np.frombuffer(data, dtype=np.uint8)
     img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
     if img is None:
@@ -520,7 +518,7 @@ def _extract_height_value(raw: str | None) -> str | None:
     return m.group(1) if m else None
 
 
-def extract_from_cni(front_b64: str, back_b64: str | None = None,
+def extract_from_cni(front_bytes: bytes, back_bytes: bytes | None = None,
                      doc_type: str = "national_id") -> DocumentFields:
     """Run OCR on CNI or Passport image(s) and extract structured fields.
 
@@ -532,7 +530,7 @@ def extract_from_cni(front_b64: str, back_b64: str | None = None,
     reader = _get_reader()
 
     # ── Front side ────────────────────────────────────────────────────────────
-    front_img = _preprocess_image(_decode_image(front_b64))
+    front_img = _preprocess_image(_decode_image(front_bytes))
     front_lines, front_conf = _run_ocr(reader, front_img)
 
     fields = DocumentFields(
@@ -681,8 +679,8 @@ def extract_from_cni(front_b64: str, back_b64: str | None = None,
             fields.document_number = front_numbers[0]
 
     # ── Back side ─────────────────────────────────────────────────────────────
-    if back_b64:
-        back_img = _preprocess_image(_decode_image(back_b64))
+    if back_bytes:
+        back_img = _preprocess_image(_decode_image(back_bytes))
         back_lines, back_conf = _run_ocr(reader, back_img)
         fields.raw_text_back = back_lines
         # Average confidence across both sides

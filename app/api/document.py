@@ -1,44 +1,73 @@
-"""POST /document/submit — OCR + face extract + queue for review."""
+"""POST /document/submit — accept a document and queue off-thread inference."""
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import require_api_key
 from app.core.db import get_db
-from app.core.redis import get_redis
 from app.models.request import DocumentSubmitRequest
-from app.models.response import DocSubmitResponse
-from app.services.document_service import _DOC_SUBMIT_LOCK_PREFIX, create_document_verification
+from app.models.response import AcceptedVerificationResponse
+from app.services.document_service import (
+    enqueue_document_verification,
+    release_document_submission_lock,
+)
+from app.services.inference_executor import run_storage_io
+from app.services.storage_service import StorageFetchError, validate_objects
+from app.services.verification_jobs import enqueue_document_processing
 
 router = APIRouter()
 
 
-@router.post("/document/submit", response_model=DocSubmitResponse)
+@router.post(
+    "/document/submit",
+    response_model=AcceptedVerificationResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
 async def submit_document(
     body: DocumentSubmitRequest,
     request: Request,
     _: str = Depends(require_api_key),
     db: AsyncSession = Depends(get_db),
-) -> DocSubmitResponse:
+) -> AcceptedVerificationResponse:
     client_ip = body.client_ip or (request.client.host if request.client else None)
     user_agent = body.user_agent or request.headers.get("user-agent")
+    created = False
 
-    verification = await create_document_verification(
-        db=db,
-        user_id=body.user_id,
-        images=body.images,
-        doc_type_input=body.doc_type,
-        client_ip=client_ip,
-        user_agent=user_agent,
-    )
+    try:
+        # Validate the submitted S3 objects synchronously, but never do that
+        # blocking boto3 I/O on the event loop or behind a long ML job.
+        await run_storage_io(validate_objects, body.image_uris)
+        verification, created = await enqueue_document_verification(
+            db=db,
+            user_id=body.user_id,
+            doc_type_input=body.doc_type,
+            client_ip=client_ip,
+            user_agent=user_agent,
+        )
+        await db.commit()
+    except (StorageFetchError, ValueError) as exc:
+        if created:
+            await release_document_submission_lock(body.user_id)
+        raise HTTPException(
+            status_code=422,
+            detail="Unable to retrieve submitted document image from storage",
+        ) from exc
+    except Exception:
+        if created:
+            await release_document_submission_lock(body.user_id)
+        raise
+    else:
+        if created:
+            await release_document_submission_lock(body.user_id)
 
-    await db.commit()
-
-    # Release the per-user mutex AFTER commit so any concurrent retry that
-    # was waiting on the lock will find the committed row in the DB.
-    redis = get_redis()
-    await redis.delete(_DOC_SUBMIT_LOCK_PREFIX + body.user_id)
-
-    return DocSubmitResponse(submission_id=verification.id, status="pending")
+    if created:
+        enqueue_document_processing(
+            verification_id=verification.id,
+            image_uris=body.image_uris,
+            doc_type_input=body.doc_type,
+            client_ip=client_ip,
+            user_agent=user_agent,
+        )
+    return AcceptedVerificationResponse(verification_id=verification.id, status="processing")

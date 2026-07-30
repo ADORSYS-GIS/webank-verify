@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
-import base64
+import threading
 from dataclasses import dataclass, field
 
 import numpy as np
+
+_face_detector = None
+_face_detector_lock = threading.Lock()
 
 
 @dataclass
@@ -30,10 +33,9 @@ class LivenessResult:
     LIVENESS_THRESHOLD: float = 60.0  # minimum score to pass
 
 
-def _decode_frame(b64: str) -> np.ndarray:
+def _decode_frame(data: bytes) -> np.ndarray:
     import cv2  # noqa: PLC0415
 
-    data = base64.b64decode(b64)
     arr = np.frombuffer(data, dtype=np.uint8)
     img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
     if img is None:
@@ -53,8 +55,18 @@ def _detect_face_region(img: np.ndarray) -> np.ndarray | None:
     import cv2  # noqa: PLC0415
 
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
-    detector = cv2.CascadeClassifier(cascade_path)
+    global _face_detector
+    if _face_detector is None:
+        with _face_detector_lock:
+            if _face_detector is None:
+                classifier = getattr(cv2, "CascadeClassifier", None)
+                if classifier is None:
+                    # Keep liveness fail-closed when an incomplete OpenCV build
+                    # is deployed: there is no face detector, so no frame passes.
+                    return None
+                cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+                _face_detector = classifier(cascade_path)
+    detector = _face_detector
     faces = detector.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(80, 80))
     if len(faces) == 0:
         return None
@@ -139,19 +151,19 @@ def _analyze_frame(img: np.ndarray) -> FrameMetrics:
     return metrics
 
 
-def analyze_frames(frames_b64: list[str]) -> LivenessResult:
+def analyze_frames(frame_bytes: list[bytes]) -> LivenessResult:
     """
-    Analyze a list of base64-encoded frames for passive liveness.
+    Analyze a list of image frames for passive liveness.
     Combines LBP texture, inter-frame motion, and per-frame quality metrics.
     """
-    if not frames_b64:
+    if not frame_bytes:
         return LivenessResult()
 
     decoded = []
-    original_indices = []  # map decoded[i] back to its index in frames_b64
-    for orig_idx, b64 in enumerate(frames_b64):
+    original_indices = []  # map decoded[i] back to its index in frame_bytes
+    for orig_idx, data in enumerate(frame_bytes):
         try:
-            decoded.append(_decode_frame(b64))
+            decoded.append(_decode_frame(data))
             original_indices.append(orig_idx)
         except ValueError:
             continue

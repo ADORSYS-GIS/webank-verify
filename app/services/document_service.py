@@ -9,9 +9,11 @@ from typing import TYPE_CHECKING
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.db import AsyncSessionLocal
 from app.core.redis import get_redis
 from app.models.db import ReviewQueue, Verification, VerificationEvent
 from app.services import face_service, ip_service, mrz_service, ocr_service, risk_service, storage_service
+from app.services.inference_executor import run_inference
 from app.services.ocr_service import DocumentFields, _compute_age, _parse_date
 
 if TYPE_CHECKING:
@@ -52,43 +54,274 @@ def _mrz_to_fields(mrz: mrz_service.MRZFields, doc_type: str) -> DocumentFields:
 
 
 def process_document_images(
-    verification_id: str,
-    images: list[str],
+    image_uris: list[str],
     doc_type: str,
     doc_type_input: str,
 ) -> tuple[DocumentFields, list[float] | None, list[str]]:
-    """CPU-bound pipeline (OCR/MRZ + face embedding + S3 upload).
+    """CPU-bound pipeline (S3 fetch + OCR/MRZ + face embedding).
 
     Runs in a worker thread so it never blocks the event loop.
     Returns (DocumentFields, embedding, image_keys).
     """
-    front_b64 = images[0]
-    back_b64 = images[1] if len(images) > 1 else None
+    image_bytes = [storage_service.fetch_bytes(uri) for uri in image_uris]
+    front_bytes = image_bytes[0]
+    back_bytes = image_bytes[1] if len(image_bytes) > 1 else None
+    image_keys = [storage_service.parse_s3_uri(uri)[1] for uri in image_uris]
 
     doc_fields: DocumentFields | None = None
     if doc_type_input == "passport":
-        mrz = mrz_service.extract_from_passport(front_b64)
+        mrz = mrz_service.extract_from_passport(front_bytes)
         if mrz:
             doc_fields = _mrz_to_fields(mrz, doc_type)
     if doc_fields is None:
         # CNI, or passport whose MRZ could not be read — fall back to OCR.
-        doc_fields = ocr_service.extract_from_cni(front_b64, back_b64, doc_type)
+        doc_fields = ocr_service.extract_from_cni(front_bytes, back_bytes, doc_type)
 
-    embedding = face_service.extract_embedding(front_b64)
+    embedding = face_service.extract_embedding(front_bytes)
 
-    img_keys = []
-    for i, img_b64 in enumerate(images):
-        img_keys.append(
-            storage_service.upload_image(img_b64, f"documents/{verification_id}", f"page_{i}")
+    return doc_fields, embedding, image_keys
+
+
+async def enqueue_document_verification(
+    db: AsyncSession,
+    user_id: str,
+    doc_type_input: str,
+    client_ip: str | None = None,
+    user_agent: str | None = None,
+    operator: str | None = None,
+) -> tuple[Verification, bool]:
+    """Create a durable processing row without running inference.
+
+    The Redis lock only protects the short create-or-lookup transaction.  The
+    row's ``processing`` status is the durable idempotency marker once the
+    request has returned 202.
+    """
+    verification_id = str(uuid.uuid4())
+    if operator:
+        verification = Verification(
+            id=verification_id,
+            user_id=user_id,
+            type="document",
+            status="processing",
+            doc_type=DOC_TYPE_MAP.get(doc_type_input, "CNI"),
+            device_info={"user_agent": user_agent, "ip": client_ip},
         )
+        db.add(verification)
+        db.add(
+            VerificationEvent(
+                verification_id=verification_id,
+                event="document_queued",
+                payload={"doc_type": verification.doc_type, "source": "admin_create", "operator": operator},
+            )
+        )
+        return verification, True
 
-    return doc_fields, embedding, img_keys
+    redis = get_redis()
+    lock_key = _DOC_SUBMIT_LOCK_PREFIX + user_id
+    acquired = await redis.set(lock_key, verification_id, nx=True, ex=_DOC_SUBMIT_LOCK_TTL)
+    if not acquired:
+        existing = (
+            await db.execute(
+                select(Verification)
+                .where(
+                    Verification.user_id == user_id,
+                    Verification.type == "document",
+                    Verification.status.in_(["processing", "pending", "manual_review"]),
+                )
+                .order_by(Verification.created_at.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if existing is not None:
+            return existing, False
+        # The lock holder may still be committing.  Return its known ID rather
+        # than making this request wait for OCR or poll Redis for minutes.
+        queued_id = await redis.get(lock_key)
+        if isinstance(queued_id, bytes):
+            queued_id = queued_id.decode()
+        return Verification(
+            id=str(queued_id or verification_id),
+            user_id=user_id,
+            type="document",
+            status="processing",
+        ), False
+
+    try:
+        existing = (
+            await db.execute(
+                select(Verification)
+                .where(
+                    Verification.user_id == user_id,
+                    Verification.type == "document",
+                    Verification.status.in_(["processing", "pending", "manual_review"]),
+                )
+                .order_by(Verification.created_at.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if existing is not None:
+            await redis.delete(lock_key)
+            return existing, False
+
+        verification = Verification(
+            id=verification_id,
+            user_id=user_id,
+            type="document",
+            status="processing",
+            doc_type=DOC_TYPE_MAP.get(doc_type_input, "CNI"),
+            device_info={"user_agent": user_agent, "ip": client_ip},
+        )
+        db.add(verification)
+        db.add(
+            VerificationEvent(
+                verification_id=verification_id,
+                event="document_queued",
+                payload={"doc_type": verification.doc_type, "source": "user_submission"},
+            )
+        )
+        return verification, True
+    except Exception:
+        # ``created`` is not available to the caller until this function
+        # returns, so this scope owns cleanup for failures after SET NX.
+        await redis.delete(lock_key)
+        raise
+
+
+async def release_document_submission_lock(user_id: str) -> None:
+    """Release the short enqueue mutex after the processing row is committed."""
+    await get_redis().delete(_DOC_SUBMIT_LOCK_PREFIX + user_id)
+
+
+async def complete_document_verification(
+    db: AsyncSession,
+    verification: Verification,
+    image_uris: list[str],
+    doc_type_input: str,
+    client_ip: str | None = None,
+    user_agent: str | None = None,
+    pipeline_result: tuple[DocumentFields, list[float] | None, list[str]] | None = None,
+    ip_analysis: IPAnalysisResult | None = None,
+    duplicate_user_ids: list[str] | None = None,
+) -> Verification:
+    """Persist a queued verification using work prepared outside its row lock."""
+    doc_type = verification.doc_type or DOC_TYPE_MAP.get(doc_type_input, "CNI")
+    if pipeline_result is None:
+        pipeline_result = await run_inference(
+            process_document_images, image_uris, doc_type, doc_type_input
+        )
+    doc_fields, embedding, img_keys = pipeline_result
+    duplicate_user_ids = duplicate_user_ids or []
+
+    risk: RiskResult = risk_service.compute_risk(
+        liveness=None,
+        face_match=None,
+        document=doc_fields,
+        ip=ip_analysis,
+        duplicate_user_ids=duplicate_user_ids or None,
+    )
+    warnings_payload = [
+        {"code": warning.code, "message": warning.message, "severity": warning.severity}
+        for warning in risk.warnings
+    ]
+    has_critical = any(warning["severity"] == "critical" for warning in warnings_payload)
+    ip_payload = None
+    if ip_analysis:
+        ip_payload = {
+            "ip": ip_analysis.ip,
+            "country": ip_analysis.country,
+            "country_name": ip_analysis.country_name,
+            "city": ip_analysis.city,
+            "isp": ip_analysis.isp,
+            "is_vpn": ip_analysis.is_vpn,
+            "is_proxy": ip_analysis.is_proxy,
+            "is_tor": ip_analysis.is_tor,
+            "risk_score": ip_analysis.risk_score,
+            "risk_flags": ip_analysis.risk_flags,
+        }
+
+    verification.doc_type = doc_type
+    verification.status = "pending"
+    verification.document_fields = {
+        "type": doc_fields.type,
+        "first_name": doc_fields.first_name,
+        "last_name": doc_fields.last_name,
+        "date_of_birth": doc_fields.date_of_birth,
+        "birth_place": doc_fields.birth_place,
+        "document_number": doc_fields.document_number,
+        "expiry_date": doc_fields.expiry_date,
+        "issue_date": doc_fields.issue_date,
+        "is_expired": doc_fields.is_expired,
+        "age": doc_fields.age,
+        "is_underage": doc_fields.is_underage,
+        "sex": doc_fields.sex,
+        "height": doc_fields.height,
+        "profession": doc_fields.profession,
+        "father": doc_fields.father,
+        "mother": doc_fields.mother,
+        "confidence": doc_fields.confidence,
+        "image_keys": img_keys,
+    }
+    verification.face_embedding = embedding
+    verification.ip_analysis = ip_payload
+    verification.warnings = warnings_payload
+    verification.device_info = {"user_agent": user_agent, "ip": client_ip}
+    db.add(
+        ReviewQueue(
+            id=str(uuid.uuid4()),
+            verification_id=verification.id,
+            user_id=verification.user_id,
+            type="document",
+            priority=1 if has_critical else 0,
+        )
+    )
+    db.add(
+        VerificationEvent(
+            verification_id=verification.id,
+            event="document_submitted",
+            payload={
+                "doc_type": doc_type,
+                "ocr_confidence": doc_fields.confidence,
+                "duplicate_user_ids": duplicate_user_ids,
+                "source": "user_submission",
+            },
+        )
+    )
+    return verification
+
+
+async def prepare_document_enrichment(
+    user_id: str,
+    embedding: list[float] | None,
+    client_ip: str | None,
+) -> tuple[IPAnalysisResult | None, list[str]]:
+    """Run external and read-only document checks before taking the row lock."""
+    ip_analysis = await ip_service.analyze_ip(client_ip) if client_ip else None
+    if not embedding:
+        return ip_analysis, []
+
+    async with AsyncSessionLocal() as db:
+        rows = (
+            await db.execute(
+                select(Verification.user_id, Verification.face_embedding).where(
+                    Verification.type == "document",
+                    Verification.status == "approved",
+                    Verification.user_id != user_id,
+                    Verification.face_embedding.isnot(None),
+                )
+            )
+        ).all()
+    duplicate_user_ids = await run_inference(
+        face_service.check_duplicate,
+        embedding,
+        [(approved_user_id, approved_embedding) for approved_user_id, approved_embedding in rows if approved_embedding],
+    )
+    return ip_analysis, duplicate_user_ids
 
 
 async def create_document_verification(
     db: AsyncSession,
     user_id: str,
-    images: list[str],
+    image_uris: list[str],
     doc_type_input: str,
     client_ip: str | None = None,
     user_agent: str | None = None,
@@ -102,7 +335,7 @@ async def create_document_verification(
     Args:
         db: Database session
         user_id: User ID for the verification
-        images: List of base64-encoded images (front required, back optional)
+        image_uris: List of S3 image URIs (front required, back optional)
         doc_type_input: Document type ('national_id', 'recepisse', or 'passport')
         client_ip: Optional client IP for IP intelligence
         user_agent: Optional user agent string
@@ -179,12 +412,9 @@ async def create_document_verification(
             await redis.delete(lock_key)
             return existing
 
-    # Import here to avoid circular dependency
-    from fastapi.concurrency import run_in_threadpool
-
-    # Heavy OCR/face/upload work, off the event loop.
-    doc_fields, embedding, img_keys = await run_in_threadpool(
-        process_document_images, verification_id, images, doc_type, doc_type_input
+    # Heavy S3 fetch/OCR/face work, off the event loop.
+    doc_fields, embedding, img_keys = await run_inference(
+        process_document_images, image_uris, doc_type, doc_type_input
     )
 
     # IP intelligence (async, network-bound).
