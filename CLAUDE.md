@@ -56,6 +56,23 @@ All KYC/identity work goes here — never to `webank-kyc-manager`. **Default bra
   vector index) — fine at current scale; revisit with a vector index if the approved set grows.
 - **Fail closed** on identity/liveness checks.
 
+## 🆔 Identifiers are CUID2, not UUID
+Every id we mint is a **CUID2** (24 chars, lowercase `a-z0-9`, starts with a letter) — never a
+new `uuid.uuid4()` call site (ADR 0039: `webank-context/decisions/0039-cuid2-is-the-house-id-format.md`,
+pending merge as of this writing). This bans **minting**, not **storing**: ids owned by systems
+we don't control (Keycloak's `sub`, device ids, externally minted tokens) arrive as-is and stay
+accepted, whatever shape they're in.
+- Never validate an id's shape — no regex, no parse, no length check. Ids are opaque strings.
+  A Pydantic `UUID4` field type is a shape check and falls under this ban.
+- Never sort or paginate by id — CUID2 has no ordering. Use `created_at`.
+- Store as `TEXT`; no native Postgres `UUID` column, no `DEFAULT gen_random_uuid()`.
+- Before naming a Python CUID2 library, verify it's on PyPI and maintained — don't invent a
+  package name. (`cuid2` on PyPI / github.com/gordon-code/cuid2 is real and actively maintained.)
+
+This repo still mints via `uuid.uuid4()` and stores in native `UUID` columns throughout
+(`app/models/db.py`, `app/services/*`, `app/api/admin.py`, migrations) — not yet migrated; see
+the PR that added this rule for the full inventory.
+
 ## Python conventions
 Follow the fineract-apps Python conventions (type hints, specific exceptions, f-strings,
 `ruff`/`mypy`). FastAPI: Pydantic schemas per operation, `Depends()` DI, async I/O drivers.
