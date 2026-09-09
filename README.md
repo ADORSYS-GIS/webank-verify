@@ -22,8 +22,9 @@ Identity verification microservice for Cameroon — Didit.me-style KYC engine bu
 
 webank-verify replaces the deprecated `webank-kyc-manager` service for identity
 verification (document OCR, liveness, biometric dedup). It is **not** a drop-in
-replacement — the current Rust BFF integrates with webank-verify via
-`WEBANK_VERIFY_BASE_URL`.
+replacement — the current Rust BFF (`webank-services/app/bff`) integrates with
+webank-verify via `WEBANK_VERIFY_BASE_URL`; the former Go BFF was removed in
+[webank-mobile#318](https://github.com/ADORSYS-GIS/webank-mobile/pull/318).
 
 OTP delivery is handled by a separate SMS gateway service
 (`fineract-adorsys-sms-gateway`) via `SMS_GATEWAY_BASE_URL`.
